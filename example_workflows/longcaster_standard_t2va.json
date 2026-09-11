@@ -1,6 +1,6 @@
 {
-  "last_node_id": 9,
-  "last_link_id": 10,
+  "last_node_id": 11,
+  "last_link_id": 14,
   "nodes": [
     {
       "id": 1,
@@ -179,6 +179,22 @@
           "name": "reference_packet",
           "type": "MMH3_MEDIA",
           "link": null
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 13
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 14
         }
       ],
       "outputs": [
@@ -199,7 +215,9 @@
         {
           "name": "project_state",
           "type": "STRING",
-          "links": null,
+          "links": [
+            12
+          ],
           "slot_index": 2
         },
         {
@@ -228,6 +246,7 @@
         false,
         "match",
         "resume-1",
+        true,
         true,
         true
       ]
@@ -337,7 +356,9 @@
         {
           "name": "Filenames",
           "type": "VHS_FILENAMES",
-          "links": null
+          "links": [
+            11
+          ]
         }
       ],
       "properties": {
@@ -357,7 +378,7 @@
         "save_output": true,
         "videopreview": {
           "hidden": false,
-          "paused": false,
+          "paused": true,
           "params": {}
         }
       },
@@ -386,6 +407,74 @@
         "Standard control workflow. External SIGMAS are disconnected and require_external_sigmas is false.\n\nCard 1 uses T2VA. Later cards use direct MMH3 latent continuation with the same fixed project mode."
       ],
       "title": "Standard sampling baseline"
+    },
+    {
+      "id": 11,
+      "type": "ResolutionSelector",
+      "pos": [
+        410,
+        -180
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            13
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            14
+          ]
+        }
+      ],
+      "title": "Portrait 544 x 960 (joined-video size)",
+      "properties": {
+        "Node name for S&R": "ResolutionSelector"
+      },
+      "widgets_values": [
+        "9:16 (Portrait Widescreen)",
+        0.5,
+        32
+      ],
+      "widgets_values_named": {
+        "aspect_ratio": "9:16 (Portrait Widescreen)",
+        "megapixels": 0.5,
+        "multiple": 32
+      },
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 10,
+      "type": "LongCasterRegisterPreview",
+      "pos": [1680, 50],
+      "size": [350, 110],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {"name": "filenames", "type": "VHS_FILENAMES", "link": 11},
+        {"name": "project_state", "type": "STRING", "link": 12}
+      ],
+      "outputs": [
+        {"name": "preview_path", "type": "STRING", "links": null, "slot_index": 0},
+        {"name": "project_preview_files", "type": "VHS_FILENAMES", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LongCasterRegisterPreview"},
+      "widgets_values": [],
+      "title": "Register card video in project"
     }
   ],
   "links": [
@@ -460,6 +549,38 @@
       8,
       1,
       "AUDIO"
+    ],
+    [
+      11,
+      8,
+      0,
+      10,
+      0,
+      "VHS_FILENAMES"
+    ],
+    [
+      12,
+      5,
+      2,
+      10,
+      1,
+      "STRING"
+    ],
+    [
+      13,
+      11,
+      0,
+      5,
+      6,
+      "INT"
+    ],
+    [
+      14,
+      11,
+      1,
+      5,
+      7,
+      "INT"
     ]
   ],
   "groups": [],

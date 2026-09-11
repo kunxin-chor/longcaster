@@ -43,6 +43,8 @@ The editable loader defaults use exact filenames from the official repositories:
 | Video VAE | `minimax_h3_video_vae_fp16.safetensors` |
 | Audio VAE | `minimax_h3_audio_vae_fp32.safetensors` |
 | REF2VA PDD-ACC | `MiniMax-H3-Ref2VA-Acc-8Step.safetensors` |
+| FL2VA reference patch | `minimax_h3_ref_patch.safetensors` |
+| FL2VA PDD-ACC | `MiniMax-H3-FL2VA-Acc-8Step.safetensors` |
 
 These are workflow defaults only. Select any compatible installed alternative from the corresponding ComfyUI dropdown, or replace the model loader with the hybrid loader and connect its `MODEL` output.
 
@@ -77,7 +79,7 @@ Keep `sampler_name=euler`, `require_external_sigmas=true`, and `generation_mode=
 
 With external PDD `SIGMAS` connected, LongCaster's `steps` and `scheduler` widgets are intentionally ignored; PDD Apply owns the number of evaluations and the exact schedule. `sampler_name` remains active and must be `euler`. The example pins PDD's `partition_check=error` so a Ref2VA/FL2VA trunk mismatch stops instead of producing a degraded render.
 
-The examples use Video Helper Suite with LongCaster's `video/longcaster_nvenc_h264-mp4.json` profile. It matches the established exporter settings: `h264_nvenc`, preset `p4`, HQ tune, VBR rate control, CQ 17, unrestricted peak bitrate, YUV 4:2:0, and AAC at 192 kbps. CQ and preset remain editable in the Video Combine node. Replace it with ComfyUI's native Save Video if NVENC or Video Helper Suite is unavailable.
+The examples use Video Helper Suite with LongCaster's `video/longcaster_nvenc_h264-mp4.json` profile. It matches the established exporter settings: `h264_nvenc`, preset `p4`, HQ tune, VBR rate control, CQ 17, unrestricted peak bitrate, YUV 4:2:0, and AAC at 192 kbps. CQ and preset remain editable in the Video Combine node. LongCaster replaces the profile's looping autoplay preview with a paused HTML video player with normal play, pause, seeking, volume, and fullscreen controls. Replace the exporter with ComfyUI's native Save Video if NVENC or Video Helper Suite is unavailable.
 
 The PDD REF2VA example selects `comfy kitchen attention` explicitly to match the established comparison workflow for reproducibility. It is not expected to provide a material quality improvement by itself.
 
@@ -91,22 +93,35 @@ LongCaster remains patch-agnostic and will accept the hybrid output, but it cann
 
 For gate 2, keep the reference-packet side of the PDD example, connect the Hybrid Loader `MODEL` directly to LongCaster, disconnect `SIGMAS`, and set `require_external_sigmas=false` with `generation_mode=ref2va`. For gate 3, route that hybrid model through Sigma Shift and PDD Apply again and restore the exact `MODEL`/`SIGMAS` connections.
 
+The ready-made gate 2 workflow is [longcaster_hybrid_ref2va.json](example_workflows/longcaster_hybrid_ref2va.json). Its **MiniMax H3 Hybrid Loader** uses `minimax_h3_fl2va_int8_convrot.safetensors` as the base, `minimax_h3_ref2va_int8_convrot.safetensors` as the overlay, and `ref2va_adaln_over_fl2va` as the patch preset. It keeps the normal MMH3 reference packet and uses standard 20-step Euler sampling. The model filenames and patch preset remain editable in ComfyUI.
+
+For the dedicated model-patch path, load [longcaster_pdd_refpatch.json](example_workflows/longcaster_pdd_refpatch.json). It wires `FL2VA MODEL → MiniMax H3 Ref-Patch Loader → Sigma Shift → FL2VA PDD-ACC → LongCaster`, with both the patched `MODEL` and exact PDD `SIGMAS` connected. The patch file and `ref_strength` are editable on the Ref-Patch node; the sample starts at strength `1.0`. This is the PDD-integrated experimental comparison requested for the FL2VA reference patch.
+
 The example uses `MMH3Create → MMH3Put` for one image. Add more `MMH3Put` nodes for image, video, and audio resources. For a large reusable reference library, save that packet with `MMH3Save` and reload it with `MMH3Load`; reconnect the same packet when resuming the LongCaster project.
 
 ## Standard sampling baseline
 
 Load [longcaster_standard_t2va.json](example_workflows/longcaster_standard_t2va.json). It connects an ordinary H3 `MODEL`, leaves `SIGMAS` disconnected, and sets `require_external_sigmas=false`. LongCaster then builds the selected standard Comfy sigma schedule. The project remains fixed to T2VA.
 
+## Resolution selector
+
+Every bundled sample drives LongCaster's `width` and `height` from ComfyUI's built-in **Resolution Selector**. The default is `9:16 (Portrait Widescreen)`, `0.5 MP`, and a multiple of 32, which resolves to **544 × 960** and matches `longcaster_joined_00001_.mp4`.
+
+Change the selector before creating a project. Resolution is part of the persistent project contract, so changing it for an existing project is rejected; use a new `project_name` for a different canvas size.
+
 ## Card controls
 
-The frontend extension adds six buttons to the main node. The `action` widget remains available for queued or API workflows.
+The frontend extension adds seven buttons to the main node. The `action` widget remains available for queued or API workflows.
 
-1. **Resume Project** creates the project if necessary or reloads `project.json`. An interrupted generation is cleared safely; accepted cards remain unchanged.
+1. **Resume Project** creates the project if necessary or reloads `project.json`. It returns status without rerunning the preview decoder; accepted cards remain unchanged.
 2. **Stop Render / Unlock** requests ComfyUI's normal render interrupt, then clears this project's pending-generation marker. An active `DRAFT` remains unchanged, and a late result from the cancelled operation cannot replace it.
 3. **Generate Draft** changes the active `EMPTY` card to `DRAFT` after sampling and full MMH3 verification.
 4. **Retry Draft** regenerates only the active draft. It reads the same accepted parent and permits a changed prompt, duration, or seed.
 5. **Accept Draft** copies the verified draft to a new immutable master and commits the manifest through an acceptance journal.
-6. **Append Card** creates an `EMPTY` child of the current accepted card. Its prompt starts blank; enter its own prompt, duration, and seed before generating.
+6. **Unpublish Latest Card** reopens only the latest accepted tail as a retryable draft. The previous master remains immutable in publication history, while its state anchor and preview are retired from the live card. Retry the card, inspect it, and accept it again; the replacement receives a new artifact number.
+7. **Append Card** creates an `EMPTY` child of the current accepted card. Its prompt starts blank; enter its own prompt, duration, and seed before generating.
+
+Middle-card editing is not exposed yet because descendants were conditioned on the old version. The stored publication history and UUID ancestry provide the basis for a future card interface that can show versions and explicitly invalidate or rebuild downstream cards.
 
 Project mode and canvas size are fixed at creation. This prevents accidental per-card mixing. Use a new project name to change between `ref2va` and `t2va` or to change resolution.
 
@@ -118,10 +133,11 @@ Accepting a card now decodes its final video frame and writes a lossless PNG cur
 
 Because a continuation target starts with the accepted parent's 39 preserved frames, the parent's final frame is anchored at target frame 38. The anchor therefore lines up with the end of the preserved prefix and the boundary into newly generated frames. Persistent Ref2VA references remain active for identity, while the current-state anchor represents the latest observable clothing, hair, held objects, injuries, and accessories.
 
-The main node has two compatibility controls:
+The main node has three continuity controls:
 
 - `auto_state_anchor=true` activates the accepted parent's current-state anchor. Disable it to run the latent-only control.
 - `reinforce_state_prompt=true` adds one authoritative-state instruction when an anchor is active. It inserts the instruction into `summary` and `retention_analysis` sections when present; otherwise it appends it without rewriting the supplied prompt. The raw prompt and effective prompt are both recorded.
+- `use_identity_anchor=true` applies the manually selected historical face checkpoint when one is active. Turn it off for an identity-anchor A/B without clearing the saved selection.
 
 Anchor assets are stored under:
 
@@ -147,6 +163,42 @@ Use a new REF2VA project so the original reference shows the character wearing b
 
 This A/B test measures whether the native state anchor reduces restoration of the older cap-and-jersey appearance. It does not claim perfect state preservation; H3 can still override conditioning, especially when the persistent identity reference strongly depicts the older state.
 
+## Stage 2B visual identity anchor
+
+The **MiniMax H3 LongCaster Identity Anchor** node selects a generated frame from any immutable accepted card. It saves that frame as a lossless PNG and binds its UUID to `<Subject 1>` at project level. The selection survives Resume and ComfyUI restarts until it is replaced, disabled, or cleared.
+
+The example workflows connect the Video Helper Suite encoder to **MiniMax H3 LongCaster Project Preview**. That small node copies the completed MP4 into `previews/<card UUID>/` and records which draft/master hash produced it. These files are disposable review media; deleting them does not affect the accepted MMH3 master or continuation.
+
+The identity image is appended to MiniMax H3's native `minimax_refs` image references. It has no target-frame coordinate and therefore does not compete with the Stage 2A current-state guide at frame 38. The original connected Ref2VA packet remains canonical and unchanged. Native H3 exposes no independent reference strength, so identity anchors record `strength=null`.
+
+To select an identity checkpoint with the visual picker:
+
+1. Generate and accept a card containing a clear view of the subject's face.
+2. Click **Refresh** on the identity node and choose the project and accepted source card.
+   For an older accepted card that predates project previews, click **Build preview** once. This loads only the Video VAE, decodes the accepted MMH3, and creates a silent navigation MP4 under the project.
+3. Scrub the embedded card video and pause on a clear face. The picker converts the playhead to the visible 24 fps frame automatically; the hidden 39-frame continuation prefix is never counted.
+4. Use the one-frame arrow buttons for precise adjustment. **Preview exact MMH3 frame** can decode the exact source frame before committing it.
+5. Keep `subject_id=<Subject 1>`, add an optional label, choose an identity scope, and click **Use Current Frame as Identity**. The final selection is decoded from the immutable MMH3 master and saved as a lossless PNG, so the H.264 preview is used only for navigation.
+6. Leave `use_identity_anchor=true` on the main node. Later Generate/Retry operations use the identity reference together with the original references, direct MMH3 continuation, and automatic current-state guide.
+
+The **Enabled** checkbox and **Clear** button use lightweight server calls and do not queue the generation graph. Clearing removes the active binding while retaining the historical PNG. Project/card refresh and video playback also avoid model loading.
+
+Project and identity actions are one-shot: after execution, their hidden action widgets return to `resume` and `inspect`. Queueing an exact-frame preview cannot accidentally repeat the previous Generate, Retry, Accept, or Append command.
+
+The identity node also accepts an optional single `selected_image`. Connect one frame from Video Helper Suite, Image From Batch, or another picker to bypass MMH3 decoding when an external image-selection workflow is preferable. Keep `source_card` and `frame_index` aligned so the stored provenance remains accurate.
+
+Identity scope controls the prompt instruction associated with the native reference image:
+
+- `face_only` uses facial identity and proportions while explicitly excluding pose, expression, hair condition, body, clothing, logos, accessories, lighting, and background. Existing anchors migrate to this scope.
+- `face_clothing` permits facial identity and clothing design.
+- `face_body` permits facial identity, body proportions, tattoos, scars, and wounds while excluding clothing and transient presentation.
+- `everything` permits the subject's full visible appearance while still excluding pose, camera composition, lighting, and background.
+- `custom` requires the user to describe exactly what may be inherited.
+
+When `reinforce_state_prompt=true`, the identity-scope instruction is inserted at the top of `retention_analysis` when that section exists. For plain prompts it is appended safely. The selected frame remains a full native H3 image reference, so scope prompting reduces unrelated copying but cannot guarantee it; a tight face crop remains the strongest `face_only` source.
+
+For the face-reappearance test, select a clear frontal frame from an early accepted card, generate one or more cards where the face is hidden, then generate the turn-back card twice with the same prompt and seed. First set `use_identity_anchor=false`; Retry with it restored to `true`. Compare facial geometry while confirming clothing and props still follow the immediate parent's current-state anchor and motion still follows its MMH3 latent prefix.
+
 Projects are stored under:
 
 ```text
@@ -155,7 +207,7 @@ ComfyUI/output/longcaster_projects/<project_name>/
 
 The separate **MiniMax H3 LongCaster Decode** node decodes the packet for preview. With `trim_context=true`, it removes the repeated 39-frame continuation prefix from both video and audio preview outputs. Decoding does not participate in continuation or persistence.
 
-The example's NVENC card previews are written under `ComfyUI/output/video/`. These are individual active-card previews. Accepted card masters remain under the project `clips/` directory.
+The example's NVENC card previews are written under `ComfyUI/output/video/` and registered under the project's `previews/` directory. Accepted card masters remain under the project `clips/` directory.
 
 ## Joined timeline export
 

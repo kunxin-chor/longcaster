@@ -4,6 +4,12 @@ import unittest
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / "example_workflows"
+WORKFLOW_NAMES = (
+    "longcaster_pdd_ref2va.json",
+    "longcaster_pdd_refpatch.json",
+    "longcaster_hybrid_ref2va.json",
+    "longcaster_standard_t2va.json",
+)
 
 
 class WorkflowSerializationTests(unittest.TestCase):
@@ -11,7 +17,7 @@ class WorkflowSerializationTests(unittest.TestCase):
         return json.loads((WORKFLOWS / name).read_text(encoding="utf-8"))
 
     def test_longcaster_widgets_include_seed_control_slot(self):
-        for name in ("longcaster_pdd_ref2va.json", "longcaster_standard_t2va.json"):
+        for name in WORKFLOW_NAMES:
             with self.subTest(name=name):
                 workflow = self._load(name)
                 node = next(item for item in workflow["nodes"] if item["type"] == "LongCasterProject")
@@ -26,6 +32,7 @@ class WorkflowSerializationTests(unittest.TestCase):
                 self.assertIn(values[13], ("match", "max"))
                 self.assertIs(values[15], True)
                 self.assertIs(values[16], True)
+                self.assertIs(values[17], True)
 
     def test_pdd_workflow_enforces_partition_check(self):
         workflow = self._load("longcaster_pdd_ref2va.json")
@@ -48,7 +55,7 @@ class WorkflowSerializationTests(unittest.TestCase):
         self.assertEqual(nodes[pdd_link[1]]["type"], "MiniMaxH3PDDAccApply")
 
     def test_workflows_use_nvenc_preview_profile(self):
-        for name in ("longcaster_pdd_ref2va.json", "longcaster_standard_t2va.json"):
+        for name in WORKFLOW_NAMES:
             with self.subTest(name=name):
                 workflow = self._load(name)
                 saver = next(item for item in workflow["nodes"] if item["type"] == "VHS_VideoCombine")
@@ -56,6 +63,70 @@ class WorkflowSerializationTests(unittest.TestCase):
                 self.assertEqual(values["format"], "video/longcaster_nvenc_h264-mp4.json")
                 self.assertEqual(values["preset"], "p4")
                 self.assertEqual(values["cq"], 17)
+                self.assertIs(values["videopreview"]["paused"], True)
+
+    def test_workflows_register_vhs_previews_in_the_project(self):
+        for name in WORKFLOW_NAMES:
+            with self.subTest(name=name):
+                workflow = self._load(name)
+                nodes = {item["id"]: item for item in workflow["nodes"]}
+                links = {item[0]: item for item in workflow["links"]}
+                registrar = next(item for item in workflow["nodes"] if item["type"] == "LongCasterRegisterPreview")
+                filename_link = links[registrar["inputs"][0]["link"]]
+                state_link = links[registrar["inputs"][1]["link"]]
+                self.assertEqual(nodes[filename_link[1]]["type"], "VHS_VideoCombine")
+                self.assertEqual(nodes[state_link[1]]["type"], "LongCasterProject")
+
+    def test_every_workflow_uses_resolution_selector(self):
+        for name in WORKFLOW_NAMES:
+            with self.subTest(name=name):
+                workflow = self._load(name)
+                nodes = {item["id"]: item for item in workflow["nodes"]}
+                links = {item[0]: item for item in workflow["links"]}
+                selector = next(item for item in workflow["nodes"] if item["type"] == "ResolutionSelector")
+                longcaster = next(item for item in workflow["nodes"] if item["type"] == "LongCasterProject")
+                self.assertEqual(selector["widgets_values"], ["9:16 (Portrait Widescreen)", 0.5, 32])
+                for input_name, output_slot in (("width", 0), ("height", 1)):
+                    target = next(item for item in longcaster["inputs"] if item["name"] == input_name)
+                    link = links[target["link"]]
+                    self.assertEqual(nodes[link[1]]["type"], "ResolutionSelector")
+                    self.assertEqual(link[2], output_slot)
+
+    def test_hybrid_workflow_is_reference_patch_standard_sampling_baseline(self):
+        workflow = self._load("longcaster_hybrid_ref2va.json")
+        nodes = {item["id"]: item for item in workflow["nodes"]}
+        links = {item[0]: item for item in workflow["links"]}
+        loader = next(item for item in workflow["nodes"] if item["type"] == "MiniMaxH3HybridLoader")
+        self.assertEqual(loader["widgets_values"][:3], [
+            "minimax_h3_fl2va_int8_convrot.safetensors",
+            "minimax_h3_ref2va_int8_convrot.safetensors",
+            "ref2va_adaln_over_fl2va",
+        ])
+        longcaster = next(item for item in workflow["nodes"] if item["type"] == "LongCasterProject")
+        model_input = next(item for item in longcaster["inputs"] if item["name"] == "model")
+        self.assertEqual(nodes[links[model_input["link"]][1]]["type"], "MiniMaxH3HybridLoader")
+        self.assertIsNone(next(item for item in longcaster["inputs"] if item["name"] == "sigmas")["link"])
+        self.assertEqual(longcaster["widgets_values"][2], "ref2va")
+        self.assertIs(longcaster["widgets_values"][12], False)
+        self.assertTrue(any(item["type"] == "MMH3Put" for item in workflow["nodes"]))
+        self.assertFalse(any(item["type"] == "MiniMaxH3PDDAccApply" for item in workflow["nodes"]))
+
+    def test_refpatch_workflow_pairs_fl2va_patch_with_fl2va_pdd(self):
+        workflow = self._load("longcaster_pdd_refpatch.json")
+        nodes = {item["id"]: item for item in workflow["nodes"]}
+        links = {item[0]: item for item in workflow["links"]}
+        loader = next(item for item in workflow["nodes"] if item["type"] == "UNETLoader")
+        patcher = next(item for item in workflow["nodes"] if item["type"] == "MiniMaxH3RefPatchLoader")
+        pdd = next(item for item in workflow["nodes"] if item["type"] == "MiniMaxH3PDDAccApply")
+        self.assertEqual(loader["widgets_values"][0], "minimax_h3_fl2va_int8_convrot.safetensors")
+        self.assertEqual(patcher["widgets_values"], ["minimax_h3_ref_patch.safetensors", 1.0])
+        self.assertEqual(pdd["widgets_values"][0], "MiniMax-H3-FL2VA-Acc-8Step.safetensors")
+        patch_input = next(item for item in patcher["inputs"] if item["name"] == "model")
+        pdd_input = next(item for item in pdd["inputs"] if item["name"] == "model")
+        self.assertEqual(nodes[links[patch_input["link"]][1]]["type"], "UNETLoader")
+        sigma_shift = nodes[links[pdd_input["link"]][1]]
+        self.assertEqual(sigma_shift["type"], "MiniMaxH3SigmaShift")
+        self.assertEqual(nodes[links[sigma_shift["inputs"][0]["link"]][1]]["type"], "MiniMaxH3RefPatchLoader")
 
     def test_pdd_workflow_includes_disabled_timeline_export(self):
         workflow = self._load("longcaster_pdd_ref2va.json")
@@ -66,6 +137,17 @@ class WorkflowSerializationTests(unittest.TestCase):
         links = {item[0]: item for item in workflow["links"]}
         self.assertEqual(links[exporter["inputs"][0]["link"]][1], 3)
         self.assertEqual(links[exporter["inputs"][1]["link"]][1], 4)
+
+    def test_pdd_workflow_includes_identity_anchor_selector(self):
+        workflow = self._load("longcaster_pdd_ref2va.json")
+        selector = next(item for item in workflow["nodes"] if item["type"] == "LongCasterIdentityAnchor")
+        self.assertEqual(selector["widgets_values"][:6], [
+            "episode_01", "inspect", "1", 0, "<Subject 1>", "identity checkpoint"
+        ])
+        self.assertEqual(selector["widgets_values"][7:], ["face_only", ""])
+        links = {item[0]: item for item in workflow["links"]}
+        self.assertEqual(links[selector["inputs"][0]["link"]][1], 3)
+        self.assertEqual(selector["outputs"][2]["name"], "selected_frame")
 
 
 if __name__ == "__main__":

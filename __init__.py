@@ -13,6 +13,9 @@ folder_paths.add_model_folder_path(
 # Register the external VHS format before importing node definitions. VHS caches
 # its dynamic format list briefly while ComfyUI builds node schemas at startup.
 from .nodes import NODE_CLASS_MAPPINGS, NODE_DISPLAY_NAME_MAPPINGS
+from .longcaster import routes as _routes
+
+_routes.register_routes()
 
 WEB_DIRECTORY = "./web"
 

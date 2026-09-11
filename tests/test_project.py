@@ -64,6 +64,43 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(current["status"], "EMPTY")
         self.assertEqual(current["generation_parent_id"], accepted["id"])
 
+    def test_unpublish_tail_preserves_master_and_allows_retry(self):
+        self._draft(body=b"published version")
+        manifest = self.store.accept()
+        accepted = self.store.active_card(manifest)
+        old_master = self.store.absolute_path(accepted["master_path"])
+        old_hash = accepted["artifact_sha256"]
+
+        manifest = self.store.unpublish_tail()
+        reopened = self.store.active_card(manifest)
+        self.assertEqual(reopened["status"], "DRAFT")
+        self.assertEqual(reopened["artifact_number"], 2)
+        self.assertIsNone(reopened["master_path"])
+        self.assertTrue(old_master.is_file())
+        self.assertEqual(sha256_file(old_master), old_hash)
+        self.assertEqual(len(reopened["publication_history"]), 1)
+        publication = reopened["publication_history"][0]
+        self.assertEqual(publication["artifact_number"], 1)
+        self.assertEqual(publication["master_path"], "clips/card_0001.mmh3")
+        self.assertEqual(self.store.validate_artifacts(manifest), [])
+        copied_draft = self.store.absolute_path(reopened["draft_path"])
+        self.assertTrue(copied_draft.is_file())
+        self.assertEqual(sha256_file(copied_draft), old_hash)
+
+        manifest = self._draft(action="retry", body=b"replacement version")
+        replacement = self.store.active_card(manifest)
+        self.assertFalse(copied_draft.exists())
+        self.assertEqual(replacement["status"], "DRAFT")
+        manifest = self.store.accept()
+        replacement = self.store.active_card(manifest)
+        self.assertEqual(replacement["master_path"], "clips/card_0002.mmh3")
+        self.assertTrue(old_master.is_file())
+        self.assertTrue(self.store.absolute_path(replacement["master_path"]).is_file())
+
+    def test_unpublish_rejects_nonaccepted_active_card(self):
+        with self.assertRaises(ProjectError):
+            self.store.unpublish_tail()
+
     def test_accept_records_anchor_without_changing_master_hash(self):
         manifest = self._draft()
         card = self.store.active_card(manifest)
@@ -91,6 +128,29 @@ class ProjectStoreTests(unittest.TestCase):
         anchor_path.write_bytes(b"changed-anchor")
         self.assertTrue(any("anchor hash mismatch" in error for error in self.store.validate_artifacts(accepted_manifest)))
 
+    def test_project_preview_is_recorded_for_the_current_artifact(self):
+        manifest = self._draft()
+        card = self.store.active_card(manifest)
+        preview = self.store.path / "previews" / card["id"] / "card_preview.mp4"
+        preview.parent.mkdir(parents=True, exist_ok=True)
+        preview.write_bytes(b"derived mp4 preview")
+        manifest = self.store.record_preview(
+            card_id=card["id"],
+            preview_path=preview,
+            preview_sha256=sha256_file(preview),
+            source_artifact_sha256=card["artifact_sha256"],
+        )
+        recorded = self.store.active_card(manifest)["preview"]
+        self.assertEqual(recorded["asset_path"], self.store.relative_path(preview))
+        self.assertEqual(recorded["source_artifact_sha256"], card["artifact_sha256"])
+        with self.assertRaises(ProjectError):
+            self.store.record_preview(
+                card_id=card["id"],
+                preview_path=preview,
+                preview_sha256=sha256_file(preview),
+                source_artifact_sha256="0" * 64,
+            )
+
     def test_schema_one_project_migrates_with_empty_anchor_lists(self):
         document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
         document["schema_version"] = 1
@@ -98,8 +158,127 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
+        self.assertEqual(migrated["active_identity_anchors"], {})
+
+    def test_schema_two_project_preserves_current_state_anchors(self):
+        document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 2
+        document.pop("active_identity_anchors", None)
+        existing = {
+            "anchor_id": "a6a81a1a-3e95-452d-9e38-c523e596420e",
+            "source_card_id": document["cards"][0]["id"],
+            "source_frame_index": 1,
+            "source_timestamp_seconds": 1 / 24,
+            "role": "current_state",
+            "asset_path": "anchors/existing.png",
+            "asset_sha256": "a" * 64,
+            "media_type": "image/png",
+            "created_at": "2026-09-11T00:00:00Z",
+            "enabled": True,
+            "mode": "MiniMaxH3AddGuide/minimax_keyframes",
+        }
+        document["cards"][0]["anchors"] = [existing]
+        self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["cards"][0]["anchors"], [existing])
+        self.assertEqual(migrated["active_identity_anchors"], {})
+
+    def test_schema_three_project_adds_publication_history(self):
+        document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 3
+        for card in document["cards"]:
+            card.pop("publication_history", None)
+        self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["cards"][0]["publication_history"], [])
+
+    def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
+        manifest = self._draft()
+        manifest = self.store.accept()
+        card = self.store.active_card(manifest)
+        anchor_id = "27a5d7a0-df0c-43b4-8f06-fdc7a96372ab"
+        anchor_path = self.store.path / "anchors" / card["id"] / f"{anchor_id}.png"
+        anchor_path.parent.mkdir(parents=True, exist_ok=True)
+        anchor_path.write_bytes(b"identity-anchor")
+        anchor = {
+            "anchor_id": anchor_id,
+            "role": "identity",
+            "source_card_id": card["id"],
+            "source_preview_frame_index": 23,
+            "source_frame_index": 23,
+            "source_preview_timestamp_seconds": 23 / 24,
+            "source_timestamp_seconds": 23 / 24,
+            "source_timestamp_sec": 23 / 24,
+            "asset_path": self.store.relative_path(anchor_path),
+            "asset_sha256": sha256_file(anchor_path),
+            "media_type": "image/png",
+            "created_at": "2026-09-11T00:00:00Z",
+            "enabled": True,
+            "subject_id": "<Subject 1>",
+            "label": "clean face",
+            "mode": "MiniMaxH3ReferenceToVideo/minimax_refs",
+            "strength": None,
+        }
+        manifest = self.store.add_identity_anchor(card["id"], anchor)
+        self.assertEqual(self.store.active_identity_anchor(manifest)["anchor_id"], anchor_id)
+        self.assertEqual(self.store.active_identity_anchor(manifest)["identity_scope"], "face_only")
+        restarted = ProjectStore(self.root, "film_01")
+        manifest = restarted.load()
+        self.assertEqual(restarted.active_identity_anchor(manifest)["label"], "clean face")
+        manifest = restarted.set_identity_anchor_enabled("<Subject 1>", False)
+        self.assertIsNone(restarted.active_identity_anchor(manifest))
+        self.assertFalse(restarted.active_identity_anchor(manifest, include_disabled=True)["enabled"])
+        manifest = restarted.set_identity_anchor_enabled("<Subject 1>", True)
+        self.assertTrue(restarted.active_identity_anchor(manifest)["enabled"])
+        manifest = restarted.clear_identity_anchor("<Subject 1>")
+        self.assertIsNone(restarted.active_identity_anchor(manifest, include_disabled=True))
+        self.assertTrue(anchor_path.is_file())
+
+    def test_identity_anchor_rejects_unaccepted_source(self):
+        card = self.store.active_card(self._draft())
+        with self.assertRaisesRegex(ProjectError, "accepted source"):
+            self.store.add_identity_anchor(card["id"], {"role": "identity"})
+
+    def test_schema_four_identity_anchor_migrates_to_face_only(self):
+        manifest = self._draft()
+        manifest = self.store.accept()
+        card = self.store.active_card(manifest)
+        anchor_id = "33b36c72-c7cc-4fc9-94df-40cc5497c875"
+        anchor_path = self.store.path / "anchors" / card["id"] / f"{anchor_id}.png"
+        anchor_path.parent.mkdir(parents=True, exist_ok=True)
+        anchor_path.write_bytes(b"legacy-identity-anchor")
+        anchor = {
+            "anchor_id": anchor_id,
+            "role": "identity",
+            "source_card_id": card["id"],
+            "source_preview_frame_index": 0,
+            "source_frame_index": 0,
+            "source_timestamp_seconds": 0.0,
+            "asset_path": self.store.relative_path(anchor_path),
+            "asset_sha256": sha256_file(anchor_path),
+            "created_at": "2026-09-11T00:00:00Z",
+            "enabled": True,
+            "subject_id": "<Subject 1>",
+            "mode": "MiniMaxH3ReferenceToVideo/minimax_refs",
+        }
+        manifest = self.store.add_identity_anchor(card["id"], anchor)
+        document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 4
+        stored = document["cards"][0]["anchors"][-1]
+        stored.pop("identity_scope", None)
+        stored.pop("custom_identity_instruction", None)
+        self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+        migrated = self.store.load()
+        active = self.store.active_identity_anchor(migrated)
+        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(active["identity_scope"], "face_only")
+        self.assertIsNone(active["custom_identity_instruction"])
 
     def test_card_uuid_is_stable_across_restart(self):
         original_id = self.store.active_card(self.manifest)["id"]

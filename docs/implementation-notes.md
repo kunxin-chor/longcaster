@@ -14,8 +14,12 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 - MMH3 card packing, full archive verification, immutable accepted masters, and hash validation.
 - Direct joint audio/video latent continuation behind `DirectLatentContinuation`, with a 39-frame handover and no VAE round trip.
 - Stage 2A automatic current-state anchors: lossless final-frame PNG extraction at acceptance, UUID-backed card metadata, native H3 `MiniMaxH3AddGuide` conditioning at the handover boundary, and optional minimal prompt reinforcement.
+- Stage 2B manual identity anchors: preview-relative frame selection from immutable accepted cards, project-level subject binding, lossless historical PNG persistence, native H3 `minimax_refs` conditioning without a spatial keyframe, and persisted prompt scopes for limiting attribute inheritance.
+- Visual Stage 2B picker: server-side project/card discovery, an embedded project-preview player with playhead-to-frame synchronization, exact MMH3 frame confirmation, direct enable/disable/clear controls, and optional one-frame `IMAGE` input interoperability.
+- Project-owned preview registration: reuse the existing VHS encode, copy it under the card UUID in `previews/`, and bind it to the exact draft/master artifact hash without changing the MMH3 master.
+- Preview backfill for older projects: decode the visible accepted-card frames once and write a silent NVENC navigation MP4; the resulting identity anchor is still extracted separately from the immutable MMH3 source.
 - Persistent UUID-based card state, ancestry, fingerprints, atomic manifests, locks, journals, restart reconciliation, and artifact diagnostics.
-- Generate, Retry, Accept, Append, Resume, and a small separate decode/trim adapter.
+- Generate, Retry, Accept, Unpublish Latest, Append, Resume, and a small separate decode/trim adapter.
 - Streaming joined-timeline export through H.264 NVENC. It reads accepted cards in timeline order and removes each recorded continuation prefix before encoding, with optional active-draft inclusion for review.
 - Minimal controller buttons and PDD REF2VA plus standard T2VA example workflows.
 - Official model filenames appear only as editable example-workflow loader defaults; the Python node has no checkpoint names or model-loading path.
@@ -45,7 +49,7 @@ Automated checks do not measure whether the model obeys the visual state strongl
 - Branching and non-tail parent selection.
 - Per-card T2VA/I2VA/L2VA/FL2VA/REF2VA switching.
 - User-supplied first/last-frame guides beyond the automatic current-state anchor.
-- Manual anchor picking, historical-anchor selection, CLSS, and additional anti-drift work.
+- CLSS, automatic best-frame selection, face detection, multi-subject UI, and additional anti-drift work.
 - Bridge retakes, latent upscale, PDD upscale, prompt inheritance/composition, and custom decoder UI.
 - Automatic embedding or copying of the reusable reference packet into each card archive.
 
@@ -54,10 +58,12 @@ Automated checks do not measure whether the model obeys the visual state strongl
 - Project mode and resolution cannot change after creation.
 - REF2VA resume requires the reference packet to be connected again before generating another card.
 - The MVP exposes one active linear tail in the UI even though ancestry is stored separately.
+- Unpublish currently applies only to the latest accepted tail. The publication-history model is intended to support a future all-cards interface and explicit descendant invalidation when editing a middle card.
 - Preview context trimming uses the model's 24 fps timing to trim decoded audio samples.
 - Timeline export requires an NVENC-capable FFmpeg and NVIDIA driver and exports at the model's fixed 24 fps.
 - Model identity is recorded as a safe patch/model summary because Comfy `MODEL` patchers do not expose a universal immutable checkpoint identity.
 - PDD-ACC compatibility with the REF2VA/FL2VA hybrid weights is not established by upstream PDD source or by the non-GPU tests.
 - The native H3 guide exposes no strength control. Stage 2A records its mode but cannot tune guide strength independently.
+- Native H3 image references expose no independent identity strength. Stage 2B records `strength=null` and uses one active identity checkpoint for `<Subject 1>` in the MVP UI. Identity scope is a prompt instruction rather than an attention mask, crop, or strength control, so the full reference image can still leak excluded attributes.
 - A single visible frame cannot preserve state that is occluded or outside the frame, and a strong older Ref2VA appearance can still win. The prompt reinforcement reduces that ambiguity but does not guarantee compliance.
 - `source_timestamp_seconds` is local to the source card archive and includes any continuation prefix stored in that card.

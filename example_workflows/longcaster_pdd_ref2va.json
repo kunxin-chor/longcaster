@@ -1,6 +1,6 @@
 {
-  "last_node_id": 20,
-  "last_link_id": 20,
+  "last_node_id": 23,
+  "last_link_id": 25,
   "nodes": [
     {
       "id": 1,
@@ -612,6 +612,22 @@
           "name": "reference_packet",
           "type": "MMH3_MEDIA",
           "link": 11
+        },
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 24
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 25
         }
       ],
       "outputs": [
@@ -632,7 +648,9 @@
         {
           "name": "project_state",
           "type": "STRING",
-          "links": null,
+          "links": [
+            23
+          ],
           "slot_index": 2
         },
         {
@@ -661,6 +679,7 @@
         true,
         "match",
         "resume-1",
+        true,
         true,
         true
       ]
@@ -770,7 +789,9 @@
         {
           "name": "Filenames",
           "type": "VHS_FILENAMES",
-          "links": null
+          "links": [
+            22
+          ]
         }
       ],
       "properties": {
@@ -790,7 +811,7 @@
         "save_output": true,
         "videopreview": {
           "hidden": false,
-          "paused": false,
+          "paused": true,
           "params": {}
         }
       },
@@ -816,7 +837,7 @@
         "Node name for S&R": "Note"
       },
       "widgets_values": [
-        "PDD first proof: keep Sigma Shift at video=12/audio=3, sampler=euler, and wire both MODEL and SIGMAS from PDD Apply. Keep partition_check=error.\n\nPDD pairing: stock REF2VA uses Ref2VA PDD. An FL2VA trunk, including FL2VA plus the reference patch, uses FL2VA PDD. Do not run a family mismatch with partition_check=warn; it can render degraded video.\n\nUse Generate Draft, inspect the preview, then Retry or Accept. After Accept, Append Card, enter a new prompt/seed/duration, and Generate Draft again.\n\nTo join the timeline, put the main node on Resume, match the export node's project_name, enable it, and Queue Prompt. It includes accepted cards by default.\n\nReferences in this packet are applied to every card in this fixed REF2VA project."
+        "PDD first proof: keep Sigma Shift at video=12/audio=3, sampler=euler, and wire both MODEL and SIGMAS from PDD Apply. Keep partition_check=error.\n\nPDD pairing: stock REF2VA uses Ref2VA PDD. An FL2VA trunk, including FL2VA plus the reference patch, uses FL2VA PDD. Do not run a family mismatch with partition_check=warn; it can render degraded video.\n\nUse Generate Draft, inspect the preview, then Retry or Accept. After Accept, Append Card, enter a new prompt/seed/duration, and Generate Draft again.\n\nIdentity: click Refresh in the visual Identity Anchor node, choose an accepted card, scrub and pause its video, then click Use Current Frame as Identity. Keep use_identity_anchor enabled on the main node.\n\nTo join the timeline, put the main node on Resume, match the export node's project_name, enable it, and Queue Prompt. It includes accepted cards by default.\n\nReferences in this packet are applied to every card in this fixed REF2VA project."
       ],
       "title": "LongCaster MVP controls"
     },
@@ -879,6 +900,131 @@
         "192k"
       ],
       "title": "Join accepted cards (enable, then Queue)"
+    },
+    {
+      "id": 21,
+      "type": "LongCasterIdentityAnchor",
+      "pos": [
+        1640,
+        790
+      ],
+      "size": [
+        430,
+        300
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video_vae",
+          "type": "VAE",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "identity_state",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 0
+        },
+        {
+          "name": "anchor_path",
+          "type": "STRING",
+          "links": null,
+          "slot_index": 1
+        },
+        {
+          "name": "selected_frame",
+          "type": "IMAGE",
+          "links": null,
+          "slot_index": 2
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LongCasterIdentityAnchor"
+      },
+      "widgets_values": [
+        "episode_01",
+        "inspect",
+        "1",
+        0,
+        "<Subject 1>",
+        "identity checkpoint",
+        "identity-1",
+        "face_only",
+        ""
+      ],
+      "title": "Visual identity anchor picker"
+    },
+    {
+      "id": 23,
+      "type": "ResolutionSelector",
+      "pos": [
+        1190,
+        -180
+      ],
+      "size": [
+        270,
+        170
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            24
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            25
+          ]
+        }
+      ],
+      "title": "Portrait 544 x 960 (joined-video size)",
+      "properties": {
+        "Node name for S&R": "ResolutionSelector"
+      },
+      "widgets_values": [
+        "9:16 (Portrait Widescreen)",
+        0.5,
+        32
+      ],
+      "widgets_values_named": {
+        "aspect_ratio": "9:16 (Portrait Widescreen)",
+        "megapixels": 0.5,
+        "multiple": 32
+      },
+      "color": "#322",
+      "bgcolor": "#533"
+    },
+    {
+      "id": 22,
+      "type": "LongCasterRegisterPreview",
+      "pos": [2440, 40],
+      "size": [350, 110],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {"name": "filenames", "type": "VHS_FILENAMES", "link": 22},
+        {"name": "project_state", "type": "STRING", "link": 23}
+      ],
+      "outputs": [
+        {"name": "preview_path", "type": "STRING", "links": null, "slot_index": 0},
+        {"name": "project_preview_files", "type": "VHS_FILENAMES", "links": null, "slot_index": 1}
+      ],
+      "properties": {"Node name for S&R": "LongCasterRegisterPreview"},
+      "widgets_values": [],
+      "title": "Register card video for identity picker"
     }
   ],
   "links": [
@@ -1033,6 +1179,46 @@
       20,
       1,
       "VAE"
+    ],
+    [
+      21,
+      3,
+      0,
+      21,
+      0,
+      "VAE"
+    ],
+    [
+      22,
+      14,
+      0,
+      22,
+      0,
+      "VHS_FILENAMES"
+    ],
+    [
+      23,
+      11,
+      2,
+      22,
+      1,
+      "STRING"
+    ],
+    [
+      24,
+      23,
+      0,
+      11,
+      6,
+      "INT"
+    ],
+    [
+      25,
+      23,
+      1,
+      11,
+      7,
+      "INT"
     ]
   ],
   "groups": [

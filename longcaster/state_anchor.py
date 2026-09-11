@@ -15,6 +15,9 @@ LOGGER = logging.getLogger("longcaster.state_anchor")
 FPS = 24.0
 ANCHOR_ROLE = "current_state"
 NATIVE_MECHANISM = "MiniMaxH3AddGuide/minimax_keyframes"
+IDENTITY_ROLE = "identity"
+IDENTITY_NATIVE_MECHANISM = "MiniMaxH3ReferenceToVideo/minimax_refs"
+IDENTITY_SCOPES = ("face_only", "face_clothing", "face_body", "everything", "custom")
 CONTINUITY_INSTRUCTION = (
     "Continue <Subject 1> from the current visual state shown in the continuation anchor. "
     "This state is authoritative where it conflicts with earlier reference appearance."
@@ -36,6 +39,18 @@ def continuation_anchor_frame(context_frame_count: int) -> int:
     if int(context_frame_count) < 1:
         raise ValueError("a continuation state anchor requires at least one handover frame")
     return int(context_frame_count) - 1
+
+
+def identity_source_frame(card: dict[str, Any], preview_frame_index: int) -> int:
+    """Translate a visible-preview frame to the physical accepted-MMH3 frame."""
+    preview_index = int(preview_frame_index)
+    preview_count = int(card.get("actual_new_frame_count") or 0)
+    if preview_index < 0 or preview_index >= preview_count:
+        raise ProjectError(
+            f"identity frame_index must be between 0 and {max(0, preview_count - 1)} "
+            f"for accepted card {card.get('artifact_number', '?')}"
+        )
+    return int(card.get("context_frame_count") or 0) + preview_index
 
 
 def _decoded_images(packet: Any, video_vae: Any) -> Any:
@@ -69,32 +84,18 @@ def persist_last_frame_anchor(
     *, store: ProjectStore, card: dict[str, Any], images: Any
 ) -> dict[str, Any]:
     """Persist the final frame from an existing decode without invoking the VAE."""
-    from PIL import Image
-
     if int(images.shape[0]) < 1:
         raise ProjectError("card preview decoded to no video frames")
     frame_index = int(images.shape[0]) - 1
-    frame = images[frame_index, ..., :3].detach().float().clamp(0, 1).cpu()
-    array = (frame * 255.0).round().byte().contiguous().numpy()
     anchor_id = str(uuid.uuid4())
-    relative = f"anchors/{card['id']}/{anchor_id}.png"
-    destination = store.absolute_path(relative)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        with temporary.open("xb") as handle:
-            Image.fromarray(array, mode="RGB").save(handle, format="PNG")
-            handle.flush()
-            os.fsync(handle.fileno())
-        if destination.exists():
-            raise ProjectError(f"state anchor already exists: {relative}")
-        os.replace(temporary, destination)
-    finally:
-        temporary.unlink(missing_ok=True)
+    relative, destination = _persist_frame_png(
+        store=store, card_id=card["id"], anchor_id=anchor_id, frame=images[frame_index]
+    )
 
     anchor = {
         "anchor_id": anchor_id,
         "source_card_id": card["id"],
+        "source_card_artifact_number": int(card["artifact_number"]),
         "source_frame_index": frame_index,
         "source_timestamp_seconds": frame_index / FPS,
         "role": ANCHOR_ROLE,
@@ -111,6 +112,168 @@ def persist_last_frame_anchor(
         card["id"], frame_index, anchor["source_timestamp_seconds"], destination, NATIVE_MECHANISM,
     )
     return anchor
+
+
+def _persist_frame_png(
+    *, store: ProjectStore, card_id: str, anchor_id: str, frame: Any
+) -> tuple[str, Path]:
+    from PIL import Image
+
+    pixels = frame[..., :3].detach().float().clamp(0, 1).cpu()
+    array = (pixels * 255.0).round().byte().contiguous().numpy()
+    relative = f"anchors/{card_id}/{anchor_id}.png"
+    destination = store.absolute_path(relative)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("xb") as handle:
+            Image.fromarray(array, mode="RGB").save(handle, format="PNG")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if destination.exists():
+            raise ProjectError(f"anchor already exists: {relative}")
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return relative, destination
+
+
+def extract_identity_frame_anchor(
+    *, store: ProjectStore, card: dict[str, Any], packet: Any, video_vae: Any,
+    preview_frame_index: int, subject_id: str, label: str = "",
+    identity_scope: str = "face_only", custom_identity_instruction: str = "",
+) -> dict[str, Any]:
+    """Extract a preview-relative frame from an immutable accepted MMH3 card."""
+    if card.get("status") != "ACCEPTED" or not card.get("master_path"):
+        raise ProjectError("identity anchors require an accepted MMH3 source card")
+    subject = str(subject_id).strip()
+    if not subject:
+        raise ProjectError("identity anchor subject_id cannot be empty")
+    scope, custom_instruction = validate_identity_scope(
+        identity_scope, custom_identity_instruction
+    )
+    image, preview_index, physical_index = decode_identity_frame(
+        card=card,
+        packet=packet,
+        video_vae=video_vae,
+        preview_frame_index=preview_frame_index,
+    )
+    anchor_id = str(uuid.uuid4())
+    relative, destination = _persist_frame_png(
+        store=store, card_id=card["id"], anchor_id=anchor_id, frame=image[0]
+    )
+    anchor = {
+        "anchor_id": anchor_id,
+        "source_card_id": card["id"],
+        "source_card_artifact_number": int(card["artifact_number"]),
+        "source_preview_frame_index": preview_index,
+        "source_frame_index": physical_index,
+        "source_preview_timestamp_seconds": preview_index / FPS,
+        "source_timestamp_seconds": physical_index / FPS,
+        "source_timestamp_sec": physical_index / FPS,
+        "role": IDENTITY_ROLE,
+        "subject_id": subject,
+        "label": str(label).strip() or None,
+        "asset_path": relative,
+        "asset_sha256": sha256_file(destination),
+        "media_type": "image/png",
+        "created_at": utc_now(),
+        "enabled": True,
+        "mode": IDENTITY_NATIVE_MECHANISM,
+        "strength": None,
+        "identity_scope": scope,
+        "custom_identity_instruction": custom_instruction,
+    }
+    LOGGER.info(
+        "LongCaster identity anchor extracted: anchor_id=%s source_card_id=%s "
+        "preview_frame_index=%d source_frame_index=%d timestamp=%.3fs asset=%s "
+        "subject_id=%s mechanism=%s",
+        anchor_id, card["id"], preview_index, physical_index,
+        anchor["source_timestamp_seconds"], destination, subject, IDENTITY_NATIVE_MECHANISM,
+    )
+    return anchor
+
+
+def persist_identity_image_anchor(
+    *, store: ProjectStore, card: dict[str, Any], image: Any,
+    preview_frame_index: int, subject_id: str, label: str = "",
+    identity_scope: str = "face_only", custom_identity_instruction: str = "",
+) -> dict[str, Any]:
+    """Persist one externally selected image with accepted-card provenance."""
+    if card.get("status") != "ACCEPTED" or not card.get("master_path"):
+        raise ProjectError("identity anchors require an accepted MMH3 source card")
+    subject = str(subject_id).strip()
+    if not subject:
+        raise ProjectError("identity anchor subject_id cannot be empty")
+    scope, custom_instruction = validate_identity_scope(
+        identity_scope, custom_identity_instruction
+    )
+    if not hasattr(image, "shape") or len(image.shape) != 4 or int(image.shape[0]) != 1:
+        raise ProjectError("selected_image must contain exactly one IMAGE frame")
+    preview_index = int(preview_frame_index)
+    physical_index = identity_source_frame(card, preview_index)
+    anchor_id = str(uuid.uuid4())
+    relative, destination = _persist_frame_png(
+        store=store, card_id=card["id"], anchor_id=anchor_id, frame=image[0]
+    )
+    anchor = {
+        "anchor_id": anchor_id,
+        "source_card_id": card["id"],
+        "source_card_artifact_number": int(card["artifact_number"]),
+        "source_preview_frame_index": preview_index,
+        "source_frame_index": physical_index,
+        "source_preview_timestamp_seconds": preview_index / FPS,
+        "source_timestamp_seconds": physical_index / FPS,
+        "source_timestamp_sec": physical_index / FPS,
+        "role": IDENTITY_ROLE,
+        "subject_id": subject,
+        "label": str(label).strip() or None,
+        "asset_path": relative,
+        "asset_sha256": sha256_file(destination),
+        "media_type": "image/png",
+        "created_at": utc_now(),
+        "enabled": True,
+        "mode": IDENTITY_NATIVE_MECHANISM,
+        "strength": None,
+        "identity_scope": scope,
+        "custom_identity_instruction": custom_instruction,
+        "selection_source": "external_image",
+    }
+    LOGGER.info(
+        "LongCaster external identity image persisted: anchor_id=%s source_card_id=%s "
+        "preview_frame_index=%d source_frame_index=%d asset=%s subject_id=%s",
+        anchor_id, card["id"], preview_index, physical_index, destination, subject,
+    )
+    return anchor
+
+
+def decode_identity_frame(
+    *, card: dict[str, Any], packet: Any, video_vae: Any, preview_frame_index: int,
+) -> tuple[Any, int, int]:
+    """Decode one exact, preview-relative identity frame without persisting it."""
+    if card.get("status") != "ACCEPTED" or not card.get("master_path"):
+        raise ProjectError("identity previews require an accepted MMH3 source card")
+    preview_index = int(preview_frame_index)
+    physical_index = identity_source_frame(card, preview_index)
+    images = _decoded_images(packet, video_vae)
+    if physical_index >= int(images.shape[0]):
+        raise ProjectError(
+            f"identity frame resolves to MMH3 frame {physical_index}, but only {int(images.shape[0])} decoded"
+        )
+    return images[physical_index:physical_index + 1], preview_index, physical_index
+
+
+def decode_identity_preview(*, card: dict[str, Any], packet: Any, video_vae: Any) -> Any:
+    """Decode only the visible portion of an accepted card for picker playback."""
+    if card.get("status") != "ACCEPTED" or not card.get("master_path"):
+        raise ProjectError("identity previews require an accepted MMH3 source card")
+    images = _decoded_images(packet, video_vae)
+    context = int(card.get("context_frame_count") or 0)
+    count = int(card.get("actual_new_frame_count") or 0)
+    end = context + count
+    if count < 1 or end > int(images.shape[0]):
+        raise ProjectError("accepted card has invalid visible preview frame metadata")
+    return images[context:end]
 
 
 def _candidate_path(store: ProjectStore, card: dict[str, Any]) -> Path:
@@ -202,22 +365,97 @@ def apply_native_anchor(
     return output[0]
 
 
-def reinforce_prompt(prompt: str) -> tuple[str, bool, list[str]]:
-    """Add one continuity sentence to known sections, or append it once."""
-    if CONTINUITY_INSTRUCTION.casefold() in prompt.casefold():
+def validate_identity_scope(scope: str, custom_instruction: str = "") -> tuple[str, str | None]:
+    normalized = str(scope or "face_only").strip().lower()
+    if normalized not in IDENTITY_SCOPES:
+        raise ProjectError(
+            f"identity_scope must be one of: {', '.join(IDENTITY_SCOPES)}"
+        )
+    custom = str(custom_instruction or "").strip()
+    if normalized == "custom" and not custom:
+        raise ProjectError("custom identity scope requires a custom identity instruction")
+    return normalized, custom if normalized == "custom" else None
+
+
+def identity_instruction(
+    subject_id: str,
+    picture_index: int,
+    identity_scope: str = "face_only",
+    custom_identity_instruction: str | None = None,
+) -> str:
+    scope, custom = validate_identity_scope(identity_scope, custom_identity_instruction or "")
+    picture = f"<Picture {int(picture_index)}>"
+    if scope == "custom":
+        return f"For {subject_id}, interpret identity anchor {picture} as follows: {custom}"
+    if scope == "face_only":
+        return (
+            f"Use identity anchor {picture} only for {subject_id}'s facial identity and facial proportions. "
+            "Do not copy its pose, expression, hairstyle or hair condition, body, clothing, logos, "
+            "accessories, lighting, or background."
+        )
+    if scope == "face_clothing":
+        return (
+            f"Use identity anchor {picture} only for {subject_id}'s facial identity and clothing design. "
+            "Do not copy its pose, expression, hairstyle or hair condition, body pose, lighting, or background."
+        )
+    if scope == "face_body":
+        return (
+            f"Use identity anchor {picture} for {subject_id}'s facial identity, body proportions, and visible "
+            "body details such as tattoos, scars, and wounds. Do not copy its pose, expression, hairstyle or "
+            "hair condition, clothing, logos, accessories, lighting, or background."
+        )
+    return (
+        f"Use identity anchor {picture} for {subject_id}'s full visible appearance, including face, hair, body, "
+        "clothing, and accessories. Do not copy its pose, camera composition, lighting, or background."
+    )
+
+
+def reinforce_prompt(
+    prompt: str,
+    *,
+    current_state_active: bool = True,
+    identity_subject_id: str | None = None,
+    identity_picture_index: int | None = None,
+    identity_scope: str = "face_only",
+    custom_identity_instruction: str | None = None,
+) -> tuple[str, bool, list[str]]:
+    """Add concise active-anchor semantics without rewriting the user prompt."""
+    state_instruction = CONTINUITY_INSTRUCTION if current_state_active else None
+    identity_text = None
+    if identity_subject_id is not None and identity_picture_index is not None:
+        identity_text = identity_instruction(
+            identity_subject_id,
+            identity_picture_index,
+            identity_scope,
+            custom_identity_instruction,
+        )
+
+    candidates = [item for item in (state_instruction, identity_text) if item]
+    candidates = [item for item in candidates if item.casefold() not in prompt.casefold()]
+    if not candidates:
         return prompt, False, []
 
     updated = prompt
     injected: list[str] = []
-    for section in ("summary", "retention_analysis"):
+    inserted: set[str] = set()
+    section_instructions = {
+        "summary": [item for item in (state_instruction,) if item in candidates],
+        # Identity scope is deliberately first and appears only in retention_analysis.
+        "retention_analysis": [item for item in (identity_text, state_instruction) if item in candidates],
+    }
+    for section, instructions in section_instructions.items():
+        if not instructions:
+            continue
+        addition = "\n".join(instructions)
         xml = re.compile(rf"(<{section}\b[^>]*>)(.*?)(</{section}\s*>)", re.IGNORECASE | re.DOTALL)
         if xml.search(updated):
             updated = xml.sub(
-                lambda match: f"{match.group(1)}{match.group(2).rstrip()}\n{CONTINUITY_INSTRUCTION}\n{match.group(3)}",
+                lambda match: f"{match.group(1)}\n{addition}\n{match.group(2).lstrip()}{match.group(3)}",
                 updated,
                 count=1,
             )
             injected.append(section)
+            inserted.update(instructions)
             continue
 
         header = re.compile(
@@ -225,12 +463,14 @@ def reinforce_prompt(prompt: str) -> tuple[str, bool, list[str]]:
         )
         if header.search(updated):
             updated = header.sub(
-                lambda match: f"{match.group('header')}\n{CONTINUITY_INSTRUCTION}", updated, count=1
+                lambda match: f"{match.group('header')}\n{addition}", updated, count=1
             )
             injected.append(section)
+            inserted.update(instructions)
 
-    if not injected:
+    missing = [item for item in candidates if item not in inserted]
+    if missing:
         separator = "\n\n" if updated.strip() else ""
-        updated = updated.rstrip() + separator + CONTINUITY_INSTRUCTION
+        updated = updated.rstrip() + separator + "\n".join(missing)
         injected.append("appended")
     return updated, True, injected

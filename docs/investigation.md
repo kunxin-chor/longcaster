@@ -11,3 +11,11 @@ This file records the source checks used while implementing the MVP. The full re
 - The local `ComfyUI_MinimaxH3HybridLoader` produces a normal Comfy `MODEL`; no special LongCaster integration is required. Its output can feed LongCaster directly for the standard reference test. It can technically replace the PDD example's UNET input, but current PDD source does not claim that merged trunk is compatible.
 
 The cross-process smoke test found and fixed the MMH3 public API split before UI work was finalized.
+
+## Middle-card FL2VA retake
+
+- Native H3 FL2VA represents first/last images as `minimax_keyframes` at the beginning and end of the generated latent. `MiniMaxH3AddGuide` can place an image guide at an explicit frame index, so a LongCaster bridge can use native conditioning rather than a private embedding.
+- Extender 2.0's FL2VA cache permits random replacement only for independent plans. Plans sourced from `previous_clip` record the predecessor ID and frame signature, and changes invalidate dependent followers.
+- `mmh3_media`'s accepted-segment reroll is the appropriate ancestry precedent: verify the target's actual parent, retain the superseded revision, and invalidate all later active segments.
+- A pure independent FL2VA replacement may not match a continuation card's visible duration because independent H3 lengths use the `17k + 5` grid while LongCaster removes a 39-frame prefix. Direct continuation from the left neighbor plus a native final-image guide from the right neighbor avoids this specific mismatch, but needs GPU validation with the patched FL2VA/reference/PDD stack.
+- The full feasibility assessment and proposed persistence contract are in `docs/fl2va-middle-retake.md`.

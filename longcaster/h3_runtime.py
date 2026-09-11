@@ -41,13 +41,14 @@ def build_conditioning(
     frames: int,
     reference_packet: Any | None,
     ref_image_size: str,
+    additional_reference_images: dict[str, Any] | None = None,
 ) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
     from comfy_extras.nodes_minimax_h3 import (
         MiniMaxH3ImageToVideo,
         MiniMaxH3ReferenceToVideo,
     )
 
-    if reference_packet is None:
+    if reference_packet is None and not additional_reference_images:
         output = MiniMaxH3ImageToVideo.execute(
             clip, video_vae, prompt, int(width), int(height), int(frames)
         )
@@ -55,13 +56,17 @@ def build_conditioning(
 
     from .mmh3_adapter import materialize_native_references
 
+    if reference_packet is None:
+        raise ValueError("additional native identity references require a REF2VA reference packet")
     references = materialize_native_references(
-        reference_packet,
-        width=width,
-        height=height,
-        target_frames=frames,
+        reference_packet, width=width, height=height, target_frames=frames,
         ref_image_size=ref_image_size,
     )
+    images = dict(references.images)
+    for name, image in (additional_reference_images or {}).items():
+        images[f"ref_image_{len(images)}_{name}"] = image
+    if len(images) > 9:
+        raise ValueError("MiniMax H3 supports at most 9 image references including the identity anchor")
     output = MiniMaxH3ReferenceToVideo.execute(
         clip,
         video_vae,
@@ -71,12 +76,14 @@ def build_conditioning(
         int(height),
         int(frames),
         ref_image_size,
-        references.images,
+        images,
         references.videos,
         references.video_audios,
         references.audios,
     )
-    return output[0], output[1], references.report
+    report = dict(references.report)
+    report["longcaster_additional_reference_images"] = len(additional_reference_images or {})
+    return output[0], output[1], report
 
 
 def sample_h3(

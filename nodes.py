@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
+import shutil
 from typing import Any
+import uuid
 
 import folder_paths
 from comfy_execution.graph_utils import ExecutionBlocker
@@ -25,15 +28,21 @@ from .longcaster.mmh3_adapter import (
     reference_snapshot,
 )
 from .longcaster.project import ProjectError, ProjectStore, sha256_file
+from .longcaster.preview import encode_project_preview
 from .longcaster.state_anchor import (
+    IDENTITY_NATIVE_MECHANISM,
     NATIVE_MECHANISM,
     apply_native_anchor,
     cache_preview_anchor,
     cached_last_frame_anchor,
     continuation_anchor_frame,
     current_state_anchor,
+    decode_identity_frame,
+    decode_identity_preview,
     extract_last_frame_anchor,
+    extract_identity_frame_anchor,
     load_anchor_image,
+    persist_identity_image_anchor,
     reinforce_prompt,
 )
 from .longcaster.timeline_export import export_timeline_nvenc
@@ -60,6 +69,7 @@ def _model_snapshot(model: Any) -> dict[str, Any]:
 
 def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict[str, Any]:
     card = store.active_card(manifest)
+    identity = store.active_identity_anchor(manifest, include_disabled=True)
     return {
         "message": message,
         "project": manifest["project_name"],
@@ -67,6 +77,7 @@ def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict
         "generation_mode": manifest["generation_mode"],
         "active_card": card,
         "card_count": len(manifest["cards"]),
+        "active_identity_anchor": identity,
         "artifact_errors": store.validate_artifacts(manifest),
         "runtime": runtime_capabilities(),
     }
@@ -98,7 +109,7 @@ class LongCasterProject:
                 "video_vae": ("VAE",),
                 "audio_vae": ("VAE",),
                 "project_name": ("STRING", {"default": "longcaster_project"}),
-                "action": (["resume", "cancel", "generate", "retry", "accept", "append"], {"default": "resume"}),
+                "action": (["resume", "cancel", "generate", "retry", "accept", "unpublish", "append"], {"default": "resume"}),
                 "generation_mode": (["ref2va", "t2va"], {"default": "ref2va"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": True}),
                 "duration_seconds": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 120.0, "step": 0.1}),
@@ -132,6 +143,7 @@ class LongCasterProject:
                 "command_id": ("STRING", {"default": "resume-1"}),
                 "auto_state_anchor": ("BOOLEAN", {"default": True}),
                 "reinforce_state_prompt": ("BOOLEAN", {"default": True}),
+                "use_identity_anchor": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -175,6 +187,7 @@ class LongCasterProject:
         command_id,
         auto_state_anchor=True,
         reinforce_state_prompt=True,
+        use_identity_anchor=True,
         sigmas=None,
         reference_packet=None,
     ):
@@ -206,13 +219,7 @@ class LongCasterProject:
             )
 
         if action == "resume":
-            card = store.active_card(manifest)
-            packet, latent = _packet_for_card(store, card)
-            if packet is None:
-                parent = store.parent_card(manifest, card)
-                if parent:
-                    packet, latent = _packet_for_card(store, parent)
-            return self._result(packet, latent, _status(manifest, store, "Project resumed."), store)
+            return self._result(None, None, _status(manifest, store, "Project resumed."), store)
 
         if action == "accept":
             draft_card = store.active_card(manifest)
@@ -232,6 +239,19 @@ class LongCasterProject:
                 None,
                 None,
                 _status(manifest, store, "Draft accepted as an immutable master; current-state anchor saved."),
+                store,
+            )
+
+        if action == "unpublish":
+            manifest = store.unpublish_tail()
+            return self._result(
+                None,
+                None,
+                _status(
+                    manifest,
+                    store,
+                    "Latest accepted card reopened as a draft; its prior immutable master was retained in publication history.",
+                ),
                 store,
             )
 
@@ -260,6 +280,18 @@ class LongCasterProject:
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)
         sigma_schedule = sigma_values(selected_sigmas)
         references = reference_snapshot(reference_packet)
+        identity_anchor = (
+            store.active_identity_anchor(manifest) if use_identity_anchor else None
+        )
+        identity_image = None
+        identity_picture_index = None
+        if identity_anchor is not None:
+            if generation_mode != "ref2va" or reference_packet is None:
+                raise ProjectError("identity anchors currently require a REF2VA project and reference packet")
+            identity_image = load_anchor_image(store, identity_anchor)
+            identity_picture_index = 1 + sum(
+                1 for item in (references or {}).get("resources", []) if item.get("kind") == "image"
+            )
         parent_packet = None
         anchor = None
         anchor_image = None
@@ -272,7 +304,10 @@ class LongCasterProject:
             if parent_packet is None:
                 raise ProjectError("accepted continuation parent has no MMH3 master")
             anchor = current_state_anchor(parent)
-            if anchor is None and not parent.get("anchors"):
+            has_current_state_record = any(
+                item.get("role") == "current_state" for item in parent.get("anchors", [])
+            )
+            if anchor is None and not has_current_state_record:
                 anchor = extract_last_frame_anchor(
                     store=store,
                     card=parent,
@@ -285,20 +320,16 @@ class LongCasterProject:
             if anchor is not None:
                 anchor_image = load_anchor_image(store, anchor)
                 anchor_frame_index = continuation_anchor_frame(context_frames)
-                if reinforce_state_prompt:
-                    effective_prompt, prompt_reinforced, prompt_sections = reinforce_prompt(prompt)
                 LOGGER.info(
                     "LongCaster state anchor active=True source_card_id=%s frame_index=%s "
                     "timestamp=%.3fs asset=%s mechanism=%s target_frame_index=%d "
-                    "prompt_reinforcement=%s sections=%s",
+                    "prompt_reinforcement=pending",
                     anchor["source_card_id"],
                     anchor["source_frame_index"],
                     float(anchor["source_timestamp_seconds"]),
                     store.absolute_path(anchor["asset_path"]),
                     NATIVE_MECHANISM,
                     anchor_frame_index,
-                    prompt_reinforced,
-                    ",".join(prompt_sections) or "none",
                 )
             else:
                 LOGGER.info(
@@ -309,6 +340,47 @@ class LongCasterProject:
         else:
             reason = "first_card" if parent is None else "disabled"
             LOGGER.info("LongCaster state anchor active=False reason=%s prompt_reinforcement=False", reason)
+        if reinforce_state_prompt and (anchor is not None or identity_anchor is not None):
+            effective_prompt, prompt_reinforced, prompt_sections = reinforce_prompt(
+                prompt,
+                current_state_active=anchor is not None,
+                identity_subject_id=identity_anchor.get("subject_id") if identity_anchor else None,
+                identity_picture_index=identity_picture_index,
+                identity_scope=identity_anchor.get("identity_scope", "face_only") if identity_anchor else "face_only",
+                custom_identity_instruction=identity_anchor.get("custom_identity_instruction") if identity_anchor else None,
+            )
+        LOGGER.info(
+            "LongCaster anchor prompt reinforcement injected=%s sections=%s",
+            prompt_reinforced, ",".join(prompt_sections) or "none",
+        )
+        identity_diagnostic = {
+            "active": identity_anchor is not None,
+            "anchor_id": identity_anchor.get("anchor_id") if identity_anchor else None,
+            "source_card_id": identity_anchor.get("source_card_id") if identity_anchor else None,
+            "source_preview_frame_index": identity_anchor.get("source_preview_frame_index") if identity_anchor else None,
+            "source_frame_index": identity_anchor.get("source_frame_index") if identity_anchor else None,
+            "source_timestamp_seconds": identity_anchor.get("source_timestamp_seconds") if identity_anchor else None,
+            "asset_path": identity_anchor.get("asset_path") if identity_anchor else None,
+            "subject_id": identity_anchor.get("subject_id") if identity_anchor else None,
+            "mechanism": IDENTITY_NATIVE_MECHANISM if identity_anchor else None,
+            "target_frame_index": None,
+            "reference_picture_index": identity_picture_index,
+            "identity_scope": identity_anchor.get("identity_scope", "face_only") if identity_anchor else None,
+            "prompt_reinforcement_injected": bool(prompt_reinforced and identity_anchor),
+        }
+        LOGGER.info(
+            "LongCaster identity anchor active=%s anchor_id=%s source_card_id=%s "
+            "preview_frame_index=%s source_frame_index=%s asset=%s subject_id=%s scope=%s "
+            "mechanism=%s target_frame_index=none picture_index=%s both_anchors_active=%s "
+            "prompt_reinforcement=%s",
+            identity_anchor is not None,
+            identity_diagnostic["anchor_id"], identity_diagnostic["source_card_id"],
+            identity_diagnostic["source_preview_frame_index"], identity_diagnostic["source_frame_index"],
+            store.absolute_path(identity_anchor["asset_path"]) if identity_anchor else None,
+            identity_diagnostic["subject_id"], identity_diagnostic["identity_scope"], identity_diagnostic["mechanism"],
+            identity_picture_index, bool(identity_anchor and anchor),
+            identity_diagnostic["prompt_reinforcement_injected"],
+        )
         anchor_diagnostic = {
             "active": anchor is not None,
             "role": "current_state" if anchor is not None else None,
@@ -319,7 +391,7 @@ class LongCasterProject:
             "anchor_id": anchor.get("anchor_id") if anchor else None,
             "mechanism": NATIVE_MECHANISM if anchor else None,
             "target_frame_index": anchor_frame_index,
-            "prompt_reinforcement_injected": prompt_reinforced,
+            "prompt_reinforcement_injected": bool(prompt_reinforced and anchor),
             "prompt_sections": prompt_sections,
         }
         recipe = {
@@ -339,6 +411,7 @@ class LongCasterProject:
             "parent_sha256": parent.get("artifact_sha256") if parent else None,
             "references": references,
             "state_anchor": anchor_diagnostic,
+            "identity_anchor": identity_diagnostic,
             "runtime": runtime_capabilities(),
         }
         fingerprint = generation_fingerprint(recipe)
@@ -363,6 +436,7 @@ class LongCasterProject:
                 frames=duration.generated_frames,
                 reference_packet=reference_packet,
                 ref_image_size=ref_image_size,
+                additional_reference_images={"identity": identity_image} if identity_image is not None else None,
             )
             continuation_plan = None
             target_latent = empty_latent
@@ -416,6 +490,7 @@ class LongCasterProject:
                 "reference_resolution": reference_report,
                 "continuation": continuation_plan,
                 "state_anchor": anchor_diagnostic,
+                "identity_anchor": identity_diagnostic,
                 "effective_prompt": effective_prompt,
                 "recipe_fingerprint": fingerprint,
             }
@@ -460,6 +535,282 @@ class LongCasterProject:
             "ui": {"longcaster_state": [status]},
             "result": (packet_output, latent_output, state_json, str(store.path)),
         }
+
+
+class LongCasterIdentityAnchor:
+    """Select and persist a generated frame as the project's facial identity checkpoint."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "project_name": ("STRING", {"default": "longcaster_project"}),
+                "action": (["inspect", "build_preview", "preview", "set", "enable", "disable", "clear"], {"default": "inspect"}),
+                "source_card": (
+                    "STRING",
+                    {
+                        "default": "1",
+                        "tooltip": "Accepted card number or UUID. Numbers are resolved to stable card UUIDs.",
+                    },
+                ),
+                "frame_index": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 100000,
+                        "tooltip": "Frame in the visible card preview; continuation-prefix frames are excluded.",
+                    },
+                ),
+                "subject_id": ("STRING", {"default": "<Subject 1>"}),
+                "label": ("STRING", {"default": "identity checkpoint"}),
+                "command_id": ("STRING", {"default": "identity-1"}),
+                "identity_scope": (
+                    ["face_only", "face_clothing", "face_body", "everything", "custom"],
+                    {
+                        "default": "face_only",
+                        "tooltip": "Controls which visible attributes the prompt may inherit from the identity picture.",
+                    },
+                ),
+                "custom_identity_instruction": (
+                    "STRING",
+                    {
+                        "default": "",
+                        "multiline": True,
+                        "tooltip": "Required when identity_scope=custom. Describe exactly what may be inherited from the anchor.",
+                    },
+                ),
+            },
+            "optional": {
+                "video_vae": ("VAE",),
+                "selected_image": (
+                    "IMAGE",
+                    {"tooltip": "Optional single frame from VHS or another image selector. Avoids decoding the MMH3 source."},
+                ),
+            },
+        }
+
+    RETURN_TYPES = ("STRING", "STRING", "IMAGE")
+    RETURN_NAMES = ("identity_state", "anchor_path", "selected_frame")
+    FUNCTION = "execute"
+    CATEGORY = "MiniMax H3/LongCaster"
+    OUTPUT_NODE = True
+    DESCRIPTION = (
+        "Selects a preview-relative frame from an immutable accepted card and persists it as "
+        "the active native H3 facial-identity reference."
+    )
+
+    @classmethod
+    def IS_CHANGED(cls, project_name="", action="", command_id="", **kwargs):
+        return f"{project_name}:{action}:{command_id}"
+
+    def execute(
+        self, project_name, action, source_card, frame_index,
+        subject_id, label, command_id, identity_scope, custom_identity_instruction,
+        video_vae=None, selected_image=None,
+    ):
+        del command_id
+        store = ProjectStore(_projects_root(), project_name)
+        manifest = store.load()
+        subject = str(subject_id).strip()
+        if not subject:
+            raise ProjectError("subject_id cannot be empty")
+
+        message = "Identity anchor state inspected."
+        preview_image = None
+        if action in {"build_preview", "preview", "set"}:
+            if manifest.get("generation_mode") != "ref2va":
+                raise ProjectError("manual identity anchors currently require a REF2VA project")
+            source = store.accepted_card(manifest, source_card)
+            if action == "build_preview":
+                if video_vae is None:
+                    raise ProjectError("building a card preview requires a connected video_vae")
+                packet, _ = _packet_for_card(store, source)
+                if packet is None:
+                    raise ProjectError("accepted identity source has no MMH3 master")
+                images = decode_identity_preview(card=source, packet=packet, video_vae=video_vae)
+                manifest, preview_path = encode_project_preview(store=store, card=source, images=images)
+                message = f"Project preview built for accepted card {source['artifact_number']}: {preview_path}"
+            elif action == "preview":
+                if selected_image is not None:
+                    if len(selected_image.shape) != 4 or int(selected_image.shape[0]) != 1:
+                        raise ProjectError("selected_image must contain exactly one IMAGE frame")
+                    preview_image = selected_image
+                    preview_index = int(frame_index)
+                else:
+                    if video_vae is None:
+                        raise ProjectError("preview requires selected_image or a connected video_vae")
+                    packet, _ = _packet_for_card(store, source)
+                    if packet is None:
+                        raise ProjectError("accepted identity source has no MMH3 master")
+                    preview_image, preview_index, _ = decode_identity_frame(
+                        card=source,
+                        packet=packet,
+                        video_vae=video_vae,
+                        preview_frame_index=frame_index,
+                    )
+                message = (
+                    f"Previewing accepted card {source['artifact_number']}, frame {preview_index} "
+                    f"({preview_index / 24.0:.3f}s)."
+                )
+            else:
+                if selected_image is not None:
+                    anchor = persist_identity_image_anchor(
+                        store=store,
+                        card=source,
+                        image=selected_image,
+                        preview_frame_index=frame_index,
+                        subject_id=subject,
+                        label=label,
+                        identity_scope=identity_scope,
+                        custom_identity_instruction=custom_identity_instruction,
+                    )
+                else:
+                    if video_vae is None:
+                        raise ProjectError("setting an identity anchor requires selected_image or video_vae")
+                    packet, _ = _packet_for_card(store, source)
+                    if packet is None:
+                        raise ProjectError("accepted identity source has no MMH3 master")
+                    anchor = extract_identity_frame_anchor(
+                        store=store,
+                        card=source,
+                        packet=packet,
+                        video_vae=video_vae,
+                        preview_frame_index=frame_index,
+                        subject_id=subject,
+                        label=label,
+                        identity_scope=identity_scope,
+                        custom_identity_instruction=custom_identity_instruction,
+                    )
+                try:
+                    manifest = store.add_identity_anchor(source["id"], anchor)
+                except Exception:
+                    store.absolute_path(anchor["asset_path"]).unlink(missing_ok=True)
+                    raise
+                preview_image = load_anchor_image(store, anchor)
+                message = (
+                    f"Identity anchor set from accepted card {source['artifact_number']}, "
+                    f"preview frame {int(frame_index)} ({int(frame_index) / 24.0:.3f}s)."
+                )
+        elif action == "enable":
+            manifest = store.set_identity_anchor_enabled(subject, True)
+            message = f"Identity anchor enabled for {subject}."
+        elif action == "disable":
+            manifest = store.set_identity_anchor_enabled(subject, False)
+            message = f"Identity anchor disabled for {subject}."
+        elif action == "clear":
+            manifest = store.clear_identity_anchor(subject)
+            message = f"Active identity anchor cleared for {subject}; its historical asset was retained."
+        elif action != "inspect":
+            raise ProjectError(f"unknown identity-anchor action: {action}")
+
+        active = store.active_identity_anchor(manifest, subject, include_disabled=True)
+        accepted = [
+            {
+                "card": card["artifact_number"],
+                "card_id": card["id"],
+                "preview_frames": card.get("actual_new_frame_count"),
+                "max_frame_index": max(0, int(card.get("actual_new_frame_count") or 1) - 1),
+                "preview_available": bool(card.get("preview", {}).get("asset_path")),
+            }
+            for card in manifest["cards"] if card["status"] == "ACCEPTED"
+        ]
+        state = {
+            "message": message,
+            "project": project_name,
+            "subject_id": subject,
+            "active_identity_anchor": active,
+            "active_source": ({
+                "card": active.get("source_card_artifact_number"),
+                "card_id": active.get("source_card_id"),
+                "preview_frame_index": active.get("source_preview_frame_index"),
+                "label": active.get("label"),
+                "identity_scope": active.get("identity_scope", "face_only"),
+                "custom_identity_instruction": active.get("custom_identity_instruction"),
+                "enabled": active.get("enabled", True),
+            } if active else None),
+            "accepted_sources": accepted,
+        }
+        path = store.absolute_path(active["asset_path"]) if active else None
+        if preview_image is None and active is not None:
+            preview_image = load_anchor_image(store, active)
+        LOGGER.info(
+            "LongCaster identity control action=%s subject_id=%s active_anchor_id=%s path=%s",
+            action, subject, active.get("anchor_id") if active else None, path,
+        )
+        image_output = preview_image if preview_image is not None else ExecutionBlocker(None)
+        return {
+            "ui": {"longcaster_identity": [state]},
+            "result": (
+                json.dumps(state, indent=2, ensure_ascii=False, sort_keys=True),
+                str(path or ""),
+                image_output,
+            ),
+        }
+
+
+class LongCasterRegisterPreview:
+    """Copy a VHS-rendered card preview into its project and record the stable path."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "filenames": ("VHS_FILENAMES",),
+                "project_state": ("STRING", {"forceInput": True}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING", "VHS_FILENAMES")
+    RETURN_NAMES = ("preview_path", "project_preview_files")
+    FUNCTION = "register"
+    CATEGORY = "MiniMax H3/LongCaster"
+    OUTPUT_NODE = True
+    DESCRIPTION = "Stores the latest VHS card preview under the LongCaster project for reuse by video/frame picker nodes."
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return float("nan")
+
+    def register(self, filenames, project_state):
+        try:
+            state = json.loads(project_state)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProjectError("project_state is not valid LongCaster JSON") from exc
+        card = state.get("active_card") or {}
+        project_name = state.get("project")
+        card_id = card.get("id")
+        artifact_hash = card.get("artifact_sha256")
+        if not project_name or not card_id or not artifact_hash:
+            raise ProjectError("the active card has no completed draft or accepted artifact")
+        if not isinstance(filenames, (tuple, list)) or len(filenames) != 2:
+            raise ProjectError("filenames must come from a Video Helper Suite Video Combine node")
+        output_files = filenames[1]
+        if not output_files:
+            raise ProjectError("Video Helper Suite did not return a preview file")
+        source = Path(output_files[-1]).resolve()
+        if not source.is_file():
+            raise ProjectError(f"preview source does not exist: {source}")
+        store = ProjectStore(_projects_root(), str(project_name))
+        destination = store.absolute_path(
+            f"previews/{card_id}/card_{int(card['artifact_number']):04d}_{artifact_hash[:12]}.mp4"
+        )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            preview_hash = sha256_file(temporary)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+        store.record_preview(
+            card_id=card_id,
+            preview_path=destination,
+            preview_sha256=preview_hash,
+            source_artifact_sha256=artifact_hash,
+        )
+        LOGGER.info("LongCaster project preview registered: card_id=%s path=%s", card_id, destination)
+        return str(destination), (True, [str(destination)])
 
 
 class LongCasterDecode:
@@ -600,12 +951,16 @@ class LongCasterTimelineExport:
 
 NODE_CLASS_MAPPINGS = {
     "LongCasterProject": LongCasterProject,
+    "LongCasterIdentityAnchor": LongCasterIdentityAnchor,
+    "LongCasterRegisterPreview": LongCasterRegisterPreview,
     "LongCasterDecode": LongCasterDecode,
     "LongCasterTimelineExport": LongCasterTimelineExport,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "LongCasterProject": "MiniMax H3 LongCaster Project",
+    "LongCasterIdentityAnchor": "MiniMax H3 LongCaster Identity Anchor",
+    "LongCasterRegisterPreview": "MiniMax H3 LongCaster Project Preview",
     "LongCasterDecode": "MiniMax H3 LongCaster Decode",
     "LongCasterTimelineExport": "MiniMax H3 LongCaster Timeline Export",
 }

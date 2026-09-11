@@ -14,8 +14,9 @@ import uuid
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED"}
+IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -133,6 +134,7 @@ def _new_card(
         "accepted_at": None,
         "last_error": None,
         "anchors": [],
+        "publication_history": [],
     }
 
 
@@ -189,6 +191,7 @@ class ProjectStore:
                 "height": int(height),
                 "active_card_id": first["id"],
                 "cards": [first],
+                "active_identity_anchors": {},
                 "pending_operation": None,
                 "last_operation": None,
             }
@@ -409,6 +412,97 @@ class ProjectStore:
                 temporary.unlink(missing_ok=True)
             return deepcopy(manifest)
 
+    def unpublish_tail(self) -> dict[str, Any]:
+        """Reopen the latest accepted card while retaining its immutable master.
+
+        The published archive and its derived assets become a version-history
+        record. A verified copy is installed as the card's retryable draft, and
+        a fresh artifact number is reserved for the next acceptance.
+        """
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot unpublish while another operation is pending")
+            card = self._active_card(manifest)
+            if card["status"] != "ACCEPTED":
+                raise ProjectError(
+                    f"unpublish requires an ACCEPTED card; current state is {card['status']}"
+                )
+            if card is not manifest["cards"][-1] or any(
+                item.get("generation_parent_id") == card["id"] for item in manifest["cards"]
+            ):
+                raise ProjectError("only the latest accepted card with no descendants can be unpublished")
+
+            master_relative = card.get("master_path")
+            master = self.absolute_path(master_relative)
+            artifact_hash = card.get("artifact_sha256")
+            if not master.is_file() or sha256_file(master) != artifact_hash:
+                raise ProjectError("accepted master is missing or does not match its recorded hash")
+
+            draft = self.draft_destination(card)
+            draft.parent.mkdir(parents=True, exist_ok=True)
+            temporary = draft.with_name(f".{draft.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with master.open("rb") as source_handle, temporary.open("xb") as target_handle:
+                    shutil.copyfileobj(source_handle, target_handle, length=1024 * 1024)
+                    target_handle.flush()
+                    os.fsync(target_handle.fileno())
+                if sha256_file(temporary) != artifact_hash:
+                    raise ProjectError("unpublished draft copy failed its hash verification")
+                os.replace(temporary, draft)
+            finally:
+                temporary.unlink(missing_ok=True)
+
+            old_artifact_number = int(card["artifact_number"])
+            old_anchors = deepcopy(card.get("anchors", []))
+            history = card.setdefault("publication_history", [])
+            history.append({
+                "publication_id": str(uuid.uuid4()),
+                "artifact_number": old_artifact_number,
+                "master_path": master_relative,
+                "artifact_sha256": artifact_hash,
+                "accepted_at": card.get("accepted_at"),
+                "invalidated_at": utc_now(),
+                "anchors": old_anchors,
+                "preview": deepcopy(card.get("preview")),
+            })
+            archived_anchor_ids = {
+                item.get("anchor_id") for item in old_anchors if item.get("anchor_id")
+            }
+            bindings = manifest.setdefault("active_identity_anchors", {})
+            for subject_id, anchor_id in list(bindings.items()):
+                if anchor_id in archived_anchor_ids:
+                    del bindings[subject_id]
+
+            all_numbers = [int(item["artifact_number"]) for item in manifest["cards"]]
+            for item in manifest["cards"]:
+                all_numbers.extend(
+                    int(publication["artifact_number"])
+                    for publication in item.get("publication_history", [])
+                )
+            card.update({
+                "artifact_number": max(all_numbers) + 1,
+                "status": "DRAFT",
+                "draft_path": self.relative_path(draft),
+                "master_path": None,
+                "accepted_at": None,
+                "anchors": [],
+                "preview": None,
+                "updated_at": utc_now(),
+                "last_error": None,
+            })
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()),
+                "kind": "unpublish_tail",
+                "status": "complete",
+                "card_id": card["id"],
+                "invalidated_artifact_number": old_artifact_number,
+                "replacement_artifact_number": card["artifact_number"],
+                "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
     def add_anchor(self, card_id: str, anchor: dict[str, Any]) -> dict[str, Any]:
         """Attach a newly materialized anchor to an existing accepted card."""
         with self.locked():
@@ -433,6 +527,117 @@ class ProjectStore:
             self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
+    def accepted_card(self, manifest: dict[str, Any], selector: str | int) -> dict[str, Any]:
+        """Resolve an accepted card by stable UUID or user-facing artifact number."""
+        value = str(selector).strip()
+        matches = [
+            card for card in manifest["cards"]
+            if card["status"] == "ACCEPTED"
+            and (card["id"] == value or str(card["artifact_number"]) == value)
+        ]
+        if not matches:
+            raise ProjectError(f"accepted source card does not exist: {selector!r}")
+        return deepcopy(matches[0])
+
+    def add_identity_anchor(self, card_id: str, anchor: dict[str, Any]) -> dict[str, Any]:
+        """Persist an identity checkpoint and make it active for its subject."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot set an identity anchor while generation is pending")
+            card = self._card(manifest, card_id)
+            if card["status"] != "ACCEPTED":
+                raise ProjectError("identity anchors require an accepted source card")
+            if anchor.get("role") != "identity":
+                raise ProjectError("manual identity anchors must use role=identity")
+            stored_anchor = deepcopy(anchor)
+            stored_anchor.setdefault("identity_scope", "face_only")
+            stored_anchor.setdefault("custom_identity_instruction", None)
+            self._validate_anchor_asset(card, stored_anchor)
+            anchors = card.setdefault("anchors", [])
+            if any(item.get("anchor_id") == stored_anchor.get("anchor_id") for item in anchors):
+                raise ProjectError("identity anchor is already present")
+            anchors.append(stored_anchor)
+            subject_id = stored_anchor["subject_id"]
+            manifest.setdefault("active_identity_anchors", {})[subject_id] = stored_anchor["anchor_id"]
+            card["updated_at"] = utc_now()
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()), "kind": "set_identity_anchor", "status": "complete",
+                "card_id": card_id, "anchor_id": stored_anchor["anchor_id"],
+                "subject_id": subject_id, "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def set_identity_anchor_enabled(self, subject_id: str, enabled: bool) -> dict[str, Any]:
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot change an identity anchor while generation is pending")
+            anchor = self._bound_identity_anchor(manifest, subject_id)
+            anchor["enabled"] = bool(enabled)
+            source = self._card(manifest, anchor["source_card_id"])
+            source["updated_at"] = utc_now()
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()),
+                "kind": "enable_identity_anchor" if enabled else "disable_identity_anchor",
+                "status": "complete", "anchor_id": anchor["anchor_id"],
+                "subject_id": subject_id, "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def clear_identity_anchor(self, subject_id: str) -> dict[str, Any]:
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot clear an identity anchor while generation is pending")
+            bindings = manifest.setdefault("active_identity_anchors", {})
+            previous = bindings.pop(subject_id, None)
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()), "kind": "clear_identity_anchor", "status": "complete",
+                "anchor_id": previous, "subject_id": subject_id, "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def active_identity_anchor(
+        self, manifest: dict[str, Any], subject_id: str = "<Subject 1>", *, include_disabled: bool = False
+    ) -> dict[str, Any] | None:
+        try:
+            anchor = deepcopy(self._bound_identity_anchor(manifest, subject_id))
+        except ProjectError:
+            return None
+        if not include_disabled and not anchor.get("enabled", True):
+            return None
+        return anchor
+
+    def record_preview(
+        self, *, card_id: str, preview_path: str | Path, preview_sha256: str,
+        source_artifact_sha256: str,
+    ) -> dict[str, Any]:
+        """Attach a disposable, rebuildable video preview to a card."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            card = self._card(manifest, card_id)
+            if card.get("artifact_sha256") != source_artifact_sha256:
+                raise ProjectError("preview source no longer matches the card's current artifact")
+            relative = self.relative_path(preview_path)
+            path = self.absolute_path(relative)
+            if not path.is_file() or sha256_file(path) != preview_sha256:
+                raise ProjectError("preview file is missing or its hash does not match")
+            card["preview"] = {
+                "asset_path": relative,
+                "asset_sha256": preview_sha256,
+                "source_artifact_sha256": source_artifact_sha256,
+                "created_at": utc_now(),
+                "media_type": "video/mp4",
+                "fps": 24,
+            }
+            card["updated_at"] = utc_now()
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
     def append(self, *, prompt: str, duration_seconds: float, seed: int) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -443,7 +648,14 @@ class ProjectStore:
                 raise ProjectError(f"append requires an ACCEPTED card; current state is {current['status']}")
             card = _new_card(
                 timeline_index=len(manifest["cards"]),
-                artifact_number=max(item["artifact_number"] for item in manifest["cards"]) + 1,
+                artifact_number=max(
+                    [int(item["artifact_number"]) for item in manifest["cards"]]
+                    + [
+                        int(publication["artifact_number"])
+                        for item in manifest["cards"]
+                        for publication in item.get("publication_history", [])
+                    ]
+                ) + 1,
                 parent_id=current["id"],
                 prompt=prompt,
                 duration_seconds=duration_seconds,
@@ -500,6 +712,23 @@ class ProjectStore:
                     errors.append(f"card {card['artifact_number']}: hash mismatch for {relative}")
             except ProjectError as exc:
                 errors.append(f"card {card['artifact_number']}: {exc}")
+            for publication in card.get("publication_history", []):
+                try:
+                    published_path = self.absolute_path(publication["master_path"])
+                    if not published_path.is_file():
+                        errors.append(
+                            f"card {card['timeline_index'] + 1}: missing historical master "
+                            f"{publication['master_path']}"
+                        )
+                    elif sha256_file(published_path) != publication.get("artifact_sha256"):
+                        errors.append(
+                            f"card {card['timeline_index'] + 1}: historical master hash mismatch "
+                            f"for {publication['master_path']}"
+                        )
+                except (KeyError, ProjectError) as exc:
+                    errors.append(
+                        f"card {card['timeline_index'] + 1}: invalid publication history: {exc}"
+                    )
             for anchor in card.get("anchors", []):
                 try:
                     anchor_path = self.absolute_path(anchor["asset_path"])
@@ -544,6 +773,8 @@ class ProjectStore:
         ids: set[str] = set()
         accepted_numbers: set[int] = set()
         anchor_ids: set[str] = set()
+        publication_ids: set[str] = set()
+        anchors_by_id: dict[str, dict[str, Any]] = {}
         for index, card in enumerate(cards):
             if card.get("id") in ids:
                 raise ProjectError("duplicate card id in project manifest")
@@ -571,7 +802,7 @@ class ProjectStore:
                 anchor_ids.add(anchor_id)
                 if anchor.get("source_card_id") != card.get("id"):
                     raise ProjectError("anchor source_card_id does not match its card")
-                if anchor.get("role") != "current_state":
+                if anchor.get("role") not in {"current_state", "identity"}:
                     raise ProjectError(f"unsupported anchor role: {anchor.get('role')}")
                 if not isinstance(anchor.get("source_frame_index"), int) or anchor["source_frame_index"] < 0:
                     raise ProjectError("anchor source_frame_index must be a non-negative integer")
@@ -590,26 +821,85 @@ class ProjectStore:
                 ):
                     raise ProjectError("anchor asset_sha256 must be a lowercase SHA-256")
                 self.relative_path(asset_path)
+                if anchor.get("role") == "identity":
+                    if card.get("status") != "ACCEPTED":
+                        raise ProjectError("identity anchors must belong to accepted cards")
+                    subject_id = anchor.get("subject_id")
+                    if not isinstance(subject_id, str) or not subject_id.strip():
+                        raise ProjectError("identity anchor subject_id is required")
+                    preview_index = anchor.get("source_preview_frame_index")
+                    if not isinstance(preview_index, int) or preview_index < 0:
+                        raise ProjectError("identity anchor preview frame index must be non-negative")
+                    scope = anchor.get("identity_scope")
+                    if scope not in IDENTITY_SCOPES:
+                        raise ProjectError("identity anchor has an invalid identity_scope")
+                    custom = anchor.get("custom_identity_instruction")
+                    if scope == "custom" and (not isinstance(custom, str) or not custom.strip()):
+                        raise ProjectError("custom identity scope requires a custom identity instruction")
+                    if scope != "custom" and custom is not None:
+                        raise ProjectError("non-custom identity scope cannot store a custom identity instruction")
+                anchors_by_id[anchor_id] = anchor
+            history = card.get("publication_history")
+            if not isinstance(history, list):
+                raise ProjectError("card publication_history must be a list")
+            for publication in history:
+                try:
+                    publication_id = publication.get("publication_id", "")
+                    uuid.UUID(publication_id)
+                except (ValueError, AttributeError) as exc:
+                    raise ProjectError("publication_id must be a UUID") from exc
+                if publication_id in publication_ids:
+                    raise ProjectError("publication IDs must be unique")
+                publication_ids.add(publication_id)
+                number = publication.get("artifact_number")
+                if not isinstance(number, int) or number < 1 or number in accepted_numbers:
+                    raise ProjectError("published artifact numbers must be positive and unique")
+                accepted_numbers.add(number)
+                path = publication.get("master_path")
+                if not isinstance(path, str) or not path:
+                    raise ProjectError("publication history master_path is required")
+                self.relative_path(path)
+                if not isinstance(publication.get("artifact_sha256"), str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", publication["artifact_sha256"]
+                ):
+                    raise ProjectError("publication history artifact_sha256 must be a lowercase SHA-256")
         if manifest.get("active_card_id") not in ids:
             raise ProjectError("active card does not exist")
+        bindings = manifest.get("active_identity_anchors")
+        if not isinstance(bindings, dict):
+            raise ProjectError("active_identity_anchors must be an object")
+        for subject_id, anchor_id in bindings.items():
+            if not isinstance(subject_id, str) or not subject_id.strip():
+                raise ProjectError("identity anchor binding subject ID is invalid")
+            anchor = anchors_by_id.get(anchor_id)
+            if anchor is None or anchor.get("role") != "identity":
+                raise ProjectError("identity anchor binding points to a missing or non-identity anchor")
+            if anchor.get("subject_id") != subject_id:
+                raise ProjectError("identity anchor binding subject does not match its anchor")
 
     @staticmethod
     def _migrate_manifest(manifest: dict[str, Any]) -> bool:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version != 1:
+        if version not in {1, 2, 3, 4}:
             raise ProjectError(f"unsupported project schema: {version}")
         for card in manifest.get("cards", []):
             card.setdefault("anchors", [])
+            card.setdefault("publication_history", [])
+            for anchor in card["anchors"]:
+                if anchor.get("role") == "identity":
+                    anchor.setdefault("identity_scope", "face_only")
+                    anchor.setdefault("custom_identity_instruction", None)
+        manifest.setdefault("active_identity_anchors", {})
         manifest["schema_version"] = SCHEMA_VERSION
         return True
 
     def _validate_anchor_asset(self, card: dict[str, Any], anchor: dict[str, Any]) -> None:
         if anchor.get("source_card_id") != card.get("id"):
             raise ProjectError("anchor source_card_id does not match the card being accepted")
-        if anchor.get("role") != "current_state":
-            raise ProjectError("automatic anchors must use role=current_state")
+        if anchor.get("role") not in {"current_state", "identity"}:
+            raise ProjectError("anchor role must be current_state or identity")
         try:
             uuid.UUID(anchor.get("anchor_id", ""))
         except (ValueError, AttributeError) as exc:
@@ -623,6 +913,15 @@ class ProjectStore:
             raise ProjectError("anchor enabled must be boolean")
         if not isinstance(anchor.get("mode"), str) or not anchor["mode"]:
             raise ProjectError("anchor mode is required")
+        if anchor.get("role") == "identity":
+            scope = anchor.get("identity_scope")
+            if scope not in IDENTITY_SCOPES:
+                raise ProjectError("identity anchor has an invalid identity_scope")
+            custom = anchor.get("custom_identity_instruction")
+            if scope == "custom" and (not isinstance(custom, str) or not custom.strip()):
+                raise ProjectError("custom identity scope requires a custom identity instruction")
+            if scope != "custom" and custom is not None:
+                raise ProjectError("non-custom identity scope cannot store a custom identity instruction")
         if not isinstance(anchor.get("asset_sha256"), str) or not re.fullmatch(
             r"[0-9a-f]{64}", anchor["asset_sha256"]
         ):
@@ -635,6 +934,17 @@ class ProjectStore:
             raise ProjectError(f"state anchor was not written: {anchor.get('asset_path')}")
         if sha256_file(path) != anchor.get("asset_sha256"):
             raise ProjectError("state anchor hash changed before manifest commit")
+
+    @staticmethod
+    def _bound_identity_anchor(manifest: dict[str, Any], subject_id: str) -> dict[str, Any]:
+        anchor_id = manifest.get("active_identity_anchors", {}).get(subject_id)
+        if not anchor_id:
+            raise ProjectError(f"no identity anchor is selected for {subject_id}")
+        for card in manifest["cards"]:
+            for anchor in card.get("anchors", []):
+                if anchor.get("anchor_id") == anchor_id and anchor.get("role") == "identity":
+                    return anchor
+        raise ProjectError(f"active identity anchor is missing: {anchor_id}")
 
     @staticmethod
     def _card(manifest: dict[str, Any], card_id: str | None) -> dict[str, Any]:
