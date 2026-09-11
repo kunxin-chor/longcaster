@@ -77,7 +77,7 @@ Keep `sampler_name=euler`, `require_external_sigmas=true`, and `generation_mode=
 
 With external PDD `SIGMAS` connected, LongCaster's `steps` and `scheduler` widgets are intentionally ignored; PDD Apply owns the number of evaluations and the exact schedule. `sampler_name` remains active and must be `euler`. The example pins PDD's `partition_check=error` so a Ref2VA/FL2VA trunk mismatch stops instead of producing a degraded render.
 
-The examples use Video Helper Suite with LongCaster's `longcaster_nvenc_h264-mp4` profile. It matches the established exporter settings: `h264_nvenc`, preset `p4`, HQ tune, VBR rate control, CQ 17, unrestricted peak bitrate, YUV 4:2:0, and AAC at 192 kbps. CQ and preset remain editable in the Video Combine node. Replace it with ComfyUI's native Save Video if NVENC or Video Helper Suite is unavailable.
+The examples use Video Helper Suite with LongCaster's `video/longcaster_nvenc_h264-mp4.json` profile. It matches the established exporter settings: `h264_nvenc`, preset `p4`, HQ tune, VBR rate control, CQ 17, unrestricted peak bitrate, YUV 4:2:0, and AAC at 192 kbps. CQ and preset remain editable in the Video Combine node. Replace it with ComfyUI's native Save Video if NVENC or Video Helper Suite is unavailable.
 
 The PDD REF2VA example selects `comfy kitchen attention` explicitly to match the established comparison workflow for reproducibility. It is not expected to provide a material quality improvement by itself.
 
@@ -111,6 +111,41 @@ The frontend extension adds six buttons to the main node. The `action` widget re
 Project mode and canvas size are fixed at creation. This prevents accidental per-card mixing. Use a new project name to change between `ref2va` and `t2va` or to change resolution.
 
 Requested duration means new timeline duration. H3 output is aligned to the nearest `17k+5` frame count. A continuation reserves 39 pixel frames as the direct latent handover, so both requested duration and actual new/generated frame counts are recorded.
+
+## Stage 2A current-state anchors
+
+Accepting a card now decodes its final video frame and writes a lossless PNG current-state anchor beside the project. The accepted `.mmh3` master remains immutable. For every later card, LongCaster still creates the direct joint AV latent handover and also feeds the source card's anchor through ComfyUI's native `MiniMaxH3AddGuide` / `minimax_keyframes` conditioning.
+
+Because a continuation target starts with the accepted parent's 39 preserved frames, the parent's final frame is anchored at target frame 38. The anchor therefore lines up with the end of the preserved prefix and the boundary into newly generated frames. Persistent Ref2VA references remain active for identity, while the current-state anchor represents the latest observable clothing, hair, held objects, injuries, and accessories.
+
+The main node has two compatibility controls:
+
+- `auto_state_anchor=true` activates the accepted parent's current-state anchor. Disable it to run the latent-only control.
+- `reinforce_state_prompt=true` adds one authoritative-state instruction when an anchor is active. It inserts the instruction into `summary` and `retention_analysis` sections when present; otherwise it appends it without rewriting the supplied prompt. The raw prompt and effective prompt are both recorded.
+
+Anchor assets are stored under:
+
+```text
+ComfyUI/output/longcaster_projects/<project_name>/anchors/<source_card_uuid>/<anchor_uuid>.png
+```
+
+Projects created before Stage 2A migrate automatically when resumed. Their existing accepted masters are unchanged. If an accepted parent has no anchor, LongCaster extracts and records it from that master's final decoded frame immediately before the next generation.
+
+The normal draft preview caches its already-decoded final frame, so **Accept Draft** can commit the anchor without loading either VAE again. If a custom workflow never decodes the draft preview, acceptance falls back to a video VAE decode so the continuity anchor is still guaranteed. Accept, Append, and Stop/Unlock block their media outputs to prevent the connected preview exporter from rerunning. Console diagnostics report the source card UUID, decoded source frame and timestamp, asset path, native mechanism, target frame, anchor-active state, and prompt-reinforcement state.
+
+### Cap and jersey continuity test
+
+Use a new REF2VA project so the original reference shows the character wearing both a cap and jersey. Keep the same reference packet and PDD wiring throughout.
+
+1. Card 1: prompt the character wearing the cap and jersey. Generate and accept it.
+2. Card 2: prompt the character removing the cap and ending without it. Generate and accept it.
+3. Card 3: prompt the character removing the jersey and ending shirtless without the cap. Generate and accept it.
+4. Append Card 4. Use an action-only prompt that does not mention the cap, jersey, or shirtless state, such as `The character walks toward the doorway as the camera follows.` Keep its seed fixed.
+5. For the latent-only control, set `auto_state_anchor=false` and `reinforce_state_prompt=false`, then Generate Draft and keep its preview.
+6. Restore `auto_state_anchor=true` and `reinforce_state_prompt=true`, keep the same Card 4 prompt and seed, then Retry Draft.
+7. Compare the two Card 4 previews. The retry is the Stage 2A result: direct continuation from accepted Card 3 plus Card 3's final-frame current-state guide. Confirm the console reports Card 3's UUID, its final decoded frame/timestamp, the PNG path, `MiniMaxH3AddGuide/minimax_keyframes`, target frame 38, and prompt reinforcement enabled.
+
+This A/B test measures whether the native state anchor reduces restoration of the older cap-and-jersey appearance. It does not claim perfect state preservation; H3 can still override conditioning, especially when the persistent identity reference strongly depicts the older state.
 
 Projects are stored under:
 
@@ -167,4 +202,4 @@ See [project format](docs/project-format.md), [implementation notes](docs/implem
 
 ## MVP boundaries
 
-The controller supports one linear active tail and one generation mode per project. Branching, card-mode switching, guide/re-encoded continuation, historical anchors, CLSS, anti-drift, latent upscale, bridge retakes, prompt composition, and custom decoder controls remain deferred. Reference resources remain in their own MMH3 packet and must be reconnected for future REF2VA generations after restart.
+The controller supports one linear active tail, one generation mode per project, and the automatic final-frame current-state anchor. Branching, card-mode switching, user-selected guides, re-encoded history, manual/historical anchor selection, CLSS, additional anti-drift methods, latent upscale, bridge retakes, prompt composition, and custom decoder controls remain deferred. Reference resources remain in their own MMH3 packet and must be reconnected for future REF2VA generations after restart.

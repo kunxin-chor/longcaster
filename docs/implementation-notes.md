@@ -13,6 +13,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 - Fixed T2VA projects as the standard sampling baseline.
 - MMH3 card packing, full archive verification, immutable accepted masters, and hash validation.
 - Direct joint audio/video latent continuation behind `DirectLatentContinuation`, with a 39-frame handover and no VAE round trip.
+- Stage 2A automatic current-state anchors: lossless final-frame PNG extraction at acceptance, UUID-backed card metadata, native H3 `MiniMaxH3AddGuide` conditioning at the handover boundary, and optional minimal prompt reinforcement.
 - Persistent UUID-based card state, ancestry, fingerprints, atomic manifests, locks, journals, restart reconciliation, and artifact diagnostics.
 - Generate, Retry, Accept, Append, Resume, and a small separate decode/trim adapter.
 - Streaming joined-timeline export through H.264 NVENC. It reads accepted cards in timeline order and removes each recorded continuation prefix before encoding, with optional active-draft inclusion for review.
@@ -32,18 +33,19 @@ The installed PDD implementation states that PDD on a hybrid-merged trunk is unt
 
 ## Verified
 
-- Non-GPU tests cover serialization, UUID stability, legal and illegal transitions, path safety, retry preservation, draft promotion, missing/corrupt artifact reporting, interruption recovery, atomic-manifest residue, fingerprints, duration alignment, sigma validation, timeline ordering, and continuation trimming.
+- Non-GPU tests cover serialization, UUID stability, legal and illegal transitions, path safety, retry preservation, draft promotion, missing/corrupt artifact reporting, interruption recovery, atomic-manifest residue, fingerprints, duration alignment, sigma validation, timeline ordering, continuation trimming, schema migration, anchor metadata/integrity, handover alignment, and prompt reinforcement.
 - Custom-node registration imports successfully in the installed ComfyUI source.
+- An embedded-Python runtime smoke composes existing `minimax_refs` with a frame-38 native `minimax_keyframes` guide and writes the UUID-backed PNG anchor.
 - The MMH3 backend smoke passed under ComfyUI's embedded Python using current MMH3 source: Card 1 save, process restart, full archive load, 39-frame direct joint AV handover, and Card 2 save.
 
-Full GPU generation was not run in this implementation environment because the H3 model assets and a sampling GPU were not available to the test process. The included PDD REF2VA workflow is the first manual acceptance gate; the five-card and restart/Card-6 sequence in the README remains the required production validation.
+Automated checks do not measure whether the model obeys the visual state strongly enough. The documented cap/jersey A/B in the PDD REF2VA workflow is the required Stage 2A acceptance gate; the five-card and restart/Card-6 sequence remains the wider production validation.
 
 ## Deferred
 
 - Branching and non-tail parent selection.
 - Per-card T2VA/I2VA/L2VA/FL2VA/REF2VA switching.
-- First/last-frame guides inside REF2VA conditioning.
-- Add Guide, decoded/re-encoded history, historical anchors, CLSS, and anti-drift work.
+- User-supplied first/last-frame guides beyond the automatic current-state anchor.
+- Manual anchor picking, historical-anchor selection, CLSS, and additional anti-drift work.
 - Bridge retakes, latent upscale, PDD upscale, prompt inheritance/composition, and custom decoder UI.
 - Automatic embedding or copying of the reusable reference packet into each card archive.
 
@@ -56,3 +58,6 @@ Full GPU generation was not run in this implementation environment because the H
 - Timeline export requires an NVENC-capable FFmpeg and NVIDIA driver and exports at the model's fixed 24 fps.
 - Model identity is recorded as a safe patch/model summary because Comfy `MODEL` patchers do not expose a universal immutable checkpoint identity.
 - PDD-ACC compatibility with the REF2VA/FL2VA hybrid weights is not established by upstream PDD source or by the non-GPU tests.
+- The native H3 guide exposes no strength control. Stage 2A records its mode but cannot tune guide strength independently.
+- A single visible frame cannot preserve state that is occluded or outside the frame, and a strong older Ref2VA appearance can still win. The prompt reinforcement reduces that ambiguity but does not guarantee compliance.
+- `source_timestamp_seconds` is local to the source card archive and includes any continuation prefix stored in that card.

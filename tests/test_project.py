@@ -64,6 +64,43 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(current["status"], "EMPTY")
         self.assertEqual(current["generation_parent_id"], accepted["id"])
 
+    def test_accept_records_anchor_without_changing_master_hash(self):
+        manifest = self._draft()
+        card = self.store.active_card(manifest)
+        anchor_id = "ae4f2b4c-82ea-4d4c-9f95-319039345594"
+        anchor_path = self.store.path / "anchors" / card["id"] / f"{anchor_id}.png"
+        anchor_path.parent.mkdir(parents=True, exist_ok=True)
+        anchor_path.write_bytes(b"lossless-anchor")
+        anchor = {
+            "anchor_id": anchor_id,
+            "source_card_id": card["id"],
+            "source_frame_index": 123,
+            "source_timestamp_seconds": 123 / 24,
+            "role": "current_state",
+            "asset_path": self.store.relative_path(anchor_path),
+            "asset_sha256": sha256_file(anchor_path),
+            "media_type": "image/png",
+            "created_at": "2026-09-11T00:00:00Z",
+            "enabled": True,
+            "mode": "MiniMaxH3AddGuide/minimax_keyframes",
+        }
+        accepted_manifest = self.store.accept(anchor=anchor)
+        accepted = self.store.active_card(accepted_manifest)
+        self.assertEqual(accepted["anchors"], [anchor])
+        self.assertEqual(sha256_file(self.store.absolute_path(accepted["master_path"])), accepted["artifact_sha256"])
+        anchor_path.write_bytes(b"changed-anchor")
+        self.assertTrue(any("anchor hash mismatch" in error for error in self.store.validate_artifacts(accepted_manifest)))
+
+    def test_schema_one_project_migrates_with_empty_anchor_lists(self):
+        document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 1
+        for card in document["cards"]:
+            card.pop("anchors", None)
+        self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 2)
+        self.assertEqual(migrated["cards"][0]["anchors"], [])
+
     def test_card_uuid_is_stable_across_restart(self):
         original_id = self.store.active_card(self.manifest)["id"]
         restarted = ProjectStore(self.root, "film_01").load()

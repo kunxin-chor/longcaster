@@ -14,7 +14,7 @@ import uuid
 from typing import Any, Iterator
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
@@ -132,6 +132,7 @@ def _new_card(
         "updated_at": now,
         "accepted_at": None,
         "last_error": None,
+        "anchors": [],
     }
 
 
@@ -166,7 +167,7 @@ class ProjectStore:
             if self.manifest_path.exists():
                 return self._load_unlocked()
             self.path.mkdir(parents=True, exist_ok=True)
-            for directory in ("clips", "drafts", "transactions", "previews"):
+            for directory in ("clips", "drafts", "transactions", "previews", "anchors"):
                 (self.path / directory).mkdir(exist_ok=True)
             first = _new_card(
                 timeline_index=0,
@@ -360,7 +361,7 @@ class ProjectStore:
             self._commit_unlocked(manifest)
             return deepcopy(manifest), True
 
-    def accept(self) -> dict[str, Any]:
+    def accept(self, *, anchor: dict[str, Any] | None = None) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
             if manifest.get("pending_operation"):
@@ -375,6 +376,8 @@ class ProjectStore:
             destination = self.absolute_path(relative_destination)
             if destination.exists():
                 raise ProjectError(f"accepted master already exists and will not be overwritten: {relative_destination}")
+            if anchor is not None:
+                self._validate_anchor_asset(card, anchor)
 
             transaction = {
                 "schema_version": 1,
@@ -383,6 +386,7 @@ class ProjectStore:
                 "source": card["draft_path"],
                 "destination": relative_destination,
                 "sha256": card["artifact_sha256"],
+                "anchor": deepcopy(anchor),
                 "created_at": utc_now(),
             }
             journal = self.path / "transactions" / f"accept_{card['id']}.json"
@@ -403,6 +407,30 @@ class ProjectStore:
                 journal.unlink(missing_ok=True)
             finally:
                 temporary.unlink(missing_ok=True)
+            return deepcopy(manifest)
+
+    def add_anchor(self, card_id: str, anchor: dict[str, Any]) -> dict[str, Any]:
+        """Attach a newly materialized anchor to an existing accepted card."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            card = self._card(manifest, card_id)
+            if card["status"] != "ACCEPTED":
+                raise ProjectError("state anchors can only be attached to accepted cards")
+            self._validate_anchor_asset(card, anchor)
+            anchors = card.setdefault("anchors", [])
+            if any(item.get("anchor_id") == anchor.get("anchor_id") for item in anchors):
+                return deepcopy(manifest)
+            anchors.append(deepcopy(anchor))
+            card["updated_at"] = utc_now()
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()),
+                "kind": "add_anchor",
+                "status": "complete",
+                "card_id": card_id,
+                "anchor_id": anchor["anchor_id"],
+                "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
     def append(self, *, prompt: str, duration_seconds: float, seed: int) -> dict[str, Any]:
@@ -472,6 +500,15 @@ class ProjectStore:
                     errors.append(f"card {card['artifact_number']}: hash mismatch for {relative}")
             except ProjectError as exc:
                 errors.append(f"card {card['artifact_number']}: {exc}")
+            for anchor in card.get("anchors", []):
+                try:
+                    anchor_path = self.absolute_path(anchor["asset_path"])
+                    if not anchor_path.is_file():
+                        errors.append(f"card {card['artifact_number']}: missing anchor {anchor['asset_path']}")
+                    elif sha256_file(anchor_path) != anchor.get("asset_sha256"):
+                        errors.append(f"card {card['artifact_number']}: anchor hash mismatch for {anchor['asset_path']}")
+                except (KeyError, ProjectError) as exc:
+                    errors.append(f"card {card['artifact_number']}: invalid anchor: {exc}")
         return errors
 
     def _load_unlocked(self) -> dict[str, Any]:
@@ -482,7 +519,12 @@ class ProjectStore:
                 manifest = json.load(handle)
         except (OSError, json.JSONDecodeError) as exc:
             raise ProjectError(f"cannot read project manifest: {exc}") from exc
+        migrated = self._migrate_manifest(manifest)
         self._validate(manifest)
+        if migrated:
+            manifest["revision"] = int(manifest.get("revision", 0)) + 1
+            manifest["updated_at"] = utc_now()
+            _atomic_json(self.manifest_path, manifest)
         return manifest
 
     def _commit_unlocked(self, manifest: dict[str, Any]) -> None:
@@ -501,6 +543,7 @@ class ProjectStore:
             raise ProjectError("project must contain at least one card")
         ids: set[str] = set()
         accepted_numbers: set[int] = set()
+        anchor_ids: set[str] = set()
         for index, card in enumerate(cards):
             if card.get("id") in ids:
                 raise ProjectError("duplicate card id in project manifest")
@@ -514,8 +557,84 @@ class ProjectStore:
                 if number in accepted_numbers:
                     raise ProjectError("duplicate accepted artifact number")
                 accepted_numbers.add(number)
+            anchors = card.get("anchors")
+            if not isinstance(anchors, list):
+                raise ProjectError("card anchors must be a list")
+            for anchor in anchors:
+                anchor_id = anchor.get("anchor_id")
+                if not isinstance(anchor_id, str) or not anchor_id or anchor_id in anchor_ids:
+                    raise ProjectError("anchor IDs must be non-empty and unique")
+                try:
+                    uuid.UUID(anchor_id)
+                except (ValueError, AttributeError) as exc:
+                    raise ProjectError("anchor_id must be a UUID") from exc
+                anchor_ids.add(anchor_id)
+                if anchor.get("source_card_id") != card.get("id"):
+                    raise ProjectError("anchor source_card_id does not match its card")
+                if anchor.get("role") != "current_state":
+                    raise ProjectError(f"unsupported anchor role: {anchor.get('role')}")
+                if not isinstance(anchor.get("source_frame_index"), int) or anchor["source_frame_index"] < 0:
+                    raise ProjectError("anchor source_frame_index must be a non-negative integer")
+                timestamp = anchor.get("source_timestamp_seconds")
+                if not isinstance(timestamp, (int, float)) or timestamp < 0:
+                    raise ProjectError("anchor source_timestamp_seconds must be non-negative")
+                if not isinstance(anchor.get("enabled"), bool):
+                    raise ProjectError("anchor enabled must be boolean")
+                if not isinstance(anchor.get("mode"), str) or not anchor["mode"]:
+                    raise ProjectError("anchor mode is required")
+                asset_path = anchor.get("asset_path")
+                if not isinstance(asset_path, str) or not asset_path:
+                    raise ProjectError("anchor asset_path is required")
+                if not isinstance(anchor.get("asset_sha256"), str) or not re.fullmatch(
+                    r"[0-9a-f]{64}", anchor["asset_sha256"]
+                ):
+                    raise ProjectError("anchor asset_sha256 must be a lowercase SHA-256")
+                self.relative_path(asset_path)
         if manifest.get("active_card_id") not in ids:
             raise ProjectError("active card does not exist")
+
+    @staticmethod
+    def _migrate_manifest(manifest: dict[str, Any]) -> bool:
+        version = manifest.get("schema_version")
+        if version == SCHEMA_VERSION:
+            return False
+        if version != 1:
+            raise ProjectError(f"unsupported project schema: {version}")
+        for card in manifest.get("cards", []):
+            card.setdefault("anchors", [])
+        manifest["schema_version"] = SCHEMA_VERSION
+        return True
+
+    def _validate_anchor_asset(self, card: dict[str, Any], anchor: dict[str, Any]) -> None:
+        if anchor.get("source_card_id") != card.get("id"):
+            raise ProjectError("anchor source_card_id does not match the card being accepted")
+        if anchor.get("role") != "current_state":
+            raise ProjectError("automatic anchors must use role=current_state")
+        try:
+            uuid.UUID(anchor.get("anchor_id", ""))
+        except (ValueError, AttributeError) as exc:
+            raise ProjectError("anchor_id must be a UUID") from exc
+        if not isinstance(anchor.get("source_frame_index"), int) or anchor["source_frame_index"] < 0:
+            raise ProjectError("anchor source_frame_index must be a non-negative integer")
+        timestamp = anchor.get("source_timestamp_seconds")
+        if not isinstance(timestamp, (int, float)) or timestamp < 0:
+            raise ProjectError("anchor source_timestamp_seconds must be non-negative")
+        if not isinstance(anchor.get("enabled"), bool):
+            raise ProjectError("anchor enabled must be boolean")
+        if not isinstance(anchor.get("mode"), str) or not anchor["mode"]:
+            raise ProjectError("anchor mode is required")
+        if not isinstance(anchor.get("asset_sha256"), str) or not re.fullmatch(
+            r"[0-9a-f]{64}", anchor["asset_sha256"]
+        ):
+            raise ProjectError("anchor asset_sha256 must be a lowercase SHA-256")
+        asset_path = anchor.get("asset_path")
+        if not isinstance(asset_path, str) or not asset_path:
+            raise ProjectError("anchor asset_path is required")
+        path = self.absolute_path(asset_path)
+        if not path.is_file():
+            raise ProjectError(f"state anchor was not written: {anchor.get('asset_path')}")
+        if sha256_file(path) != anchor.get("asset_sha256"):
+            raise ProjectError("state anchor hash changed before manifest commit")
 
     @staticmethod
     def _card(manifest: dict[str, Any], card_id: str | None) -> dict[str, Any]:
@@ -530,6 +649,12 @@ class ProjectStore:
     @staticmethod
     def _finish_accept_unlocked(manifest: dict[str, Any], transaction: dict[str, Any]) -> None:
         card = ProjectStore._card(manifest, transaction["card_id"])
+        anchor = transaction.get("anchor")
+        anchors = card.setdefault("anchors", [])
+        if anchor is not None and not any(
+            item.get("anchor_id") == anchor.get("anchor_id") for item in anchors
+        ):
+            anchors.append(deepcopy(anchor))
         card.update({
             "status": "ACCEPTED",
             "master_path": transaction["destination"],
@@ -559,6 +684,8 @@ class ProjectStore:
                     journal.unlink(missing_ok=True)
                     continue
                 if destination.is_file() and sha256_file(destination) == transaction["sha256"]:
+                    if transaction.get("anchor") is not None:
+                        self._validate_anchor_asset(card, transaction["anchor"])
                     self._finish_accept_unlocked(manifest, transaction)
                     journal.unlink(missing_ok=True)
                     changed = True

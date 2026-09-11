@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 import folder_paths
+from comfy_execution.graph_utils import ExecutionBlocker
 
 from .longcaster.duration import H3_CONTINUATION_CONTEXT_FRAMES, resolve_duration
 from .longcaster.continuation import DIRECT_LATENT_CONTINUATION
@@ -23,7 +25,21 @@ from .longcaster.mmh3_adapter import (
     reference_snapshot,
 )
 from .longcaster.project import ProjectError, ProjectStore, sha256_file
+from .longcaster.state_anchor import (
+    NATIVE_MECHANISM,
+    apply_native_anchor,
+    cache_preview_anchor,
+    cached_last_frame_anchor,
+    continuation_anchor_frame,
+    current_state_anchor,
+    extract_last_frame_anchor,
+    load_anchor_image,
+    reinforce_prompt,
+)
 from .longcaster.timeline_export import export_timeline_nvenc
+
+
+LOGGER = logging.getLogger("longcaster")
 
 
 def _projects_root() -> Path:
@@ -114,6 +130,8 @@ class LongCasterProject:
                 "require_external_sigmas": ("BOOLEAN", {"default": True}),
                 "ref_image_size": (["match", "max"], {"default": "match"}),
                 "command_id": ("STRING", {"default": "resume-1"}),
+                "auto_state_anchor": ("BOOLEAN", {"default": True}),
+                "reinforce_state_prompt": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -155,6 +173,8 @@ class LongCasterProject:
         require_external_sigmas,
         ref_image_size,
         command_id,
+        auto_state_anchor=True,
+        reinforce_state_prompt=True,
         sigmas=None,
         reference_packet=None,
     ):
@@ -173,14 +193,8 @@ class LongCasterProject:
 
         if action == "cancel":
             manifest, cancelled = store.cancel_pending()
-            card = store.active_card(manifest)
-            packet, latent = _packet_for_card(store, card)
-            if packet is None:
-                parent = store.parent_card(manifest, card)
-                if parent:
-                    packet, latent = _packet_for_card(store, parent)
             message = "Render stopped and project unlocked." if cancelled else "Project was already unlocked."
-            return self._result(packet, latent, _status(manifest, store, message), store)
+            return self._result(None, None, _status(manifest, store, message), store)
 
         if manifest["generation_mode"] != generation_mode:
             raise ProjectError(
@@ -201,17 +215,29 @@ class LongCasterProject:
             return self._result(packet, latent, _status(manifest, store, "Project resumed."), store)
 
         if action == "accept":
-            manifest = store.accept()
-            card = store.active_card(manifest)
-            packet, latent = _packet_for_card(store, card)
-            return self._result(packet, latent, _status(manifest, store, "Draft accepted as an immutable master."), store)
+            draft_card = store.active_card(manifest)
+            anchor = cached_last_frame_anchor(store, draft_card)
+            if anchor is None:
+                draft_packet, _ = _packet_for_card(store, draft_card)
+                if draft_packet is None:
+                    raise ProjectError("accept requires a decoded draft for current-state anchor extraction")
+                anchor = extract_last_frame_anchor(
+                    store=store,
+                    card=draft_card,
+                    packet=draft_packet,
+                    video_vae=video_vae,
+                )
+            manifest = store.accept(anchor=anchor)
+            return self._result(
+                None,
+                None,
+                _status(manifest, store, "Draft accepted as an immutable master; current-state anchor saved."),
+                store,
+            )
 
         if action == "append":
             manifest = store.append(prompt="", duration_seconds=duration_seconds, seed=seed)
-            card = store.active_card(manifest)
-            parent = store.parent_card(manifest, card)
-            packet, latent = _packet_for_card(store, parent) if parent else (None, None)
-            return self._result(packet, latent, _status(manifest, store, "New empty card appended."), store)
+            return self._result(None, None, _status(manifest, store, "New empty card appended."), store)
 
         if action not in {"generate", "retry"}:
             raise ProjectError(f"unknown action: {action}")
@@ -234,10 +260,73 @@ class LongCasterProject:
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)
         sigma_schedule = sigma_values(selected_sigmas)
         references = reference_snapshot(reference_packet)
+        parent_packet = None
+        anchor = None
+        anchor_image = None
+        anchor_frame_index = None
+        effective_prompt = prompt
+        prompt_reinforced = False
+        prompt_sections: list[str] = []
+        if parent and auto_state_anchor:
+            parent_packet, _ = _packet_for_card(store, parent)
+            if parent_packet is None:
+                raise ProjectError("accepted continuation parent has no MMH3 master")
+            anchor = current_state_anchor(parent)
+            if anchor is None and not parent.get("anchors"):
+                anchor = extract_last_frame_anchor(
+                    store=store,
+                    card=parent,
+                    packet=parent_packet,
+                    video_vae=video_vae,
+                )
+                manifest = store.add_anchor(parent["id"], anchor)
+                current = store.active_card(manifest)
+                parent = store.parent_card(manifest, current)
+            if anchor is not None:
+                anchor_image = load_anchor_image(store, anchor)
+                anchor_frame_index = continuation_anchor_frame(context_frames)
+                if reinforce_state_prompt:
+                    effective_prompt, prompt_reinforced, prompt_sections = reinforce_prompt(prompt)
+                LOGGER.info(
+                    "LongCaster state anchor active=True source_card_id=%s frame_index=%s "
+                    "timestamp=%.3fs asset=%s mechanism=%s target_frame_index=%d "
+                    "prompt_reinforcement=%s sections=%s",
+                    anchor["source_card_id"],
+                    anchor["source_frame_index"],
+                    float(anchor["source_timestamp_seconds"]),
+                    store.absolute_path(anchor["asset_path"]),
+                    NATIVE_MECHANISM,
+                    anchor_frame_index,
+                    prompt_reinforced,
+                    ",".join(prompt_sections) or "none",
+                )
+            else:
+                LOGGER.info(
+                    "LongCaster state anchor active=False reason=no_enabled_current_state_anchor "
+                    "source_card_id=%s prompt_reinforcement=False",
+                    parent["id"],
+                )
+        else:
+            reason = "first_card" if parent is None else "disabled"
+            LOGGER.info("LongCaster state anchor active=False reason=%s prompt_reinforcement=False", reason)
+        anchor_diagnostic = {
+            "active": anchor is not None,
+            "role": "current_state" if anchor is not None else None,
+            "source_card_id": anchor.get("source_card_id") if anchor else None,
+            "source_frame_index": anchor.get("source_frame_index") if anchor else None,
+            "source_timestamp_seconds": anchor.get("source_timestamp_seconds") if anchor else None,
+            "asset_path": anchor.get("asset_path") if anchor else None,
+            "anchor_id": anchor.get("anchor_id") if anchor else None,
+            "mechanism": NATIVE_MECHANISM if anchor else None,
+            "target_frame_index": anchor_frame_index,
+            "prompt_reinforcement_injected": prompt_reinforced,
+            "prompt_sections": prompt_sections,
+        }
         recipe = {
             "version": 1,
             "project_mode": generation_mode,
             "prompt": prompt,
+            "effective_prompt": effective_prompt,
             "requested_duration_seconds": float(duration_seconds),
             "duration_plan": duration.__dict__,
             "seed": int(seed),
@@ -249,6 +338,7 @@ class LongCasterProject:
             "model": _model_snapshot(model),
             "parent_sha256": parent.get("artifact_sha256") if parent else None,
             "references": references,
+            "state_anchor": anchor_diagnostic,
             "runtime": runtime_capabilities(),
         }
         fingerprint = generation_fingerprint(recipe)
@@ -267,7 +357,7 @@ class LongCasterProject:
                 clip=clip,
                 video_vae=video_vae,
                 audio_vae=audio_vae,
-                prompt=prompt,
+                prompt=effective_prompt,
                 width=width,
                 height=height,
                 frames=duration.generated_frames,
@@ -277,13 +367,22 @@ class LongCasterProject:
             continuation_plan = None
             target_latent = empty_latent
             if parent:
-                parent_packet, _ = _packet_for_card(store, parent)
+                if parent_packet is None:
+                    parent_packet, _ = _packet_for_card(store, parent)
                 target_latent, continuation_plan = DIRECT_LATENT_CONTINUATION.prepare(
                     parent_packet,
                     target_frames=duration.generated_frames,
                     width=width,
                     height=height,
                     context_frames=context_frames,
+                )
+            if anchor_image is not None:
+                positive = apply_native_anchor(
+                    positive=positive,
+                    latent=target_latent,
+                    video_vae=video_vae,
+                    image=anchor_image,
+                    frame_index=anchor_frame_index,
                 )
             sampled = sample_h3(
                 model=model,
@@ -316,6 +415,8 @@ class LongCasterProject:
                 "sigmas_sha256": generation_fingerprint({"sigmas": sigma_schedule}),
                 "reference_resolution": reference_report,
                 "continuation": continuation_plan,
+                "state_anchor": anchor_diagnostic,
+                "effective_prompt": effective_prompt,
                 "recipe_fingerprint": fingerprint,
             }
             saved_packet, final_path = pack_and_save_card(
@@ -350,9 +451,14 @@ class LongCasterProject:
     @staticmethod
     def _result(packet, latent, status, store):
         state_json = json.dumps(status, indent=2, ensure_ascii=False, sort_keys=True)
+        # A new or interrupted project may legitimately have no draft/master yet.
+        # Block only consumers of those unavailable outputs so status/path outputs
+        # still update and downstream decode/export nodes do not receive None.
+        packet_output = packet if packet is not None else ExecutionBlocker(None)
+        latent_output = latent if latent is not None else ExecutionBlocker(None)
         return {
             "ui": {"longcaster_state": [status]},
-            "result": (packet, latent, state_json, str(store.path)),
+            "result": (packet_output, latent_output, state_json, str(store.path)),
         }
 
 
@@ -377,6 +483,12 @@ class LongCasterDecode:
     def decode(self, card_packet, video_vae, audio_vae, trim_context):
         from comfy_extras.nodes_audio import vae_decode_audio
 
+        if card_packet is None:
+            # Defensive compatibility for a cached result produced before empty
+            # project outputs were converted to ExecutionBlocker instances.
+            blocker = ExecutionBlocker(None)
+            return blocker, blocker, blocker
+
         latent, _ = primary_latent(card_packet)
         parts = latent["samples"].unbind()
         if len(parts) != 2:
@@ -385,8 +497,20 @@ class LongCasterDecode:
         images = video_vae.decode(video_latent)
         if len(images.shape) == 5:
             images = images.reshape(-1, images.shape[-3], images.shape[-2], images.shape[-1])
-        audio = vae_decode_audio(audio_vae, {"samples": audio_latent})
         metadata = card_packet.manifest.get("extensions", {}).get("longcaster", {}).get("card", {})
+        project_name = metadata.get("project_name")
+        card_id = metadata.get("card_id")
+        if project_name and card_id:
+            try:
+                store = ProjectStore(_projects_root(), project_name)
+                manifest = store.load()
+                card = next((item for item in manifest["cards"] if item["id"] == card_id), None)
+                if card is not None and card.get("status") == "DRAFT":
+                    cache_preview_anchor(store=store, card=card, images=images)
+            except Exception as exc:
+                # Preview must remain usable; Accept retains a VAE-decode fallback.
+                LOGGER.warning("Could not cache LongCaster draft state anchor: %s", exc)
+        audio = vae_decode_audio(audio_vae, {"samples": audio_latent})
         context = int(metadata.get("context_frame_count", 0)) if trim_context else 0
         if context:
             images = images[context:]

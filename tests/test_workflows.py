@@ -24,6 +24,8 @@ class WorkflowSerializationTests(unittest.TestCase):
                 self.assertEqual(values[11], "euler")
                 self.assertIsInstance(values[12], bool)
                 self.assertIn(values[13], ("match", "max"))
+                self.assertIs(values[15], True)
+                self.assertIs(values[16], True)
 
     def test_pdd_workflow_enforces_partition_check(self):
         workflow = self._load("longcaster_pdd_ref2va.json")
@@ -51,7 +53,7 @@ class WorkflowSerializationTests(unittest.TestCase):
                 workflow = self._load(name)
                 saver = next(item for item in workflow["nodes"] if item["type"] == "VHS_VideoCombine")
                 values = saver["widgets_values"]
-                self.assertEqual(values["format"], "video/longcaster_nvenc_h264-mp4")
+                self.assertEqual(values["format"], "video/longcaster_nvenc_h264-mp4.json")
                 self.assertEqual(values["preset"], "p4")
                 self.assertEqual(values["cq"], 17)
 

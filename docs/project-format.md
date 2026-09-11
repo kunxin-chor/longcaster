@@ -11,6 +11,9 @@
 │   └── card_0002.mmh3
 ├── drafts/
 │   └── card_0003_<attempt UUID>_draft.mmh3
+├── anchors/
+│   └── <source card UUID>/
+│       └── <anchor UUID>.png
 ├── transactions/
 └── previews/
 ```
@@ -19,13 +22,13 @@
 
 ## Manifest
 
-`project.json` schema version 1 contains project-wide fixed settings and a list of cards. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 2 contains project-wide fixed settings and a list of cards. Schema 1 projects migrate in place by adding an empty `anchors` list to every card; MMH3 masters are not changed. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `1`. |
+| `schema_version` | Manifest schema, currently `2`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | Fixed `ref2va` or `t2va` mode. |
@@ -53,6 +56,9 @@ Card fields include:
 | `artifact_sha256` | Hash of the current authoritative artifact. |
 | `generation_fingerprint` | SHA-256 of the canonical generation recipe. |
 | `recipe` | Prompt, duration plan, model summary, exact sigma values, sampler, parent hash, references, and runtime capability snapshot. |
+| `anchors` | Persistent anchor records sourced from this card. Stage 2A creates one automatic `current_state` record at acceptance. |
+
+Each anchor record contains `anchor_id`, `source_card_id`, `source_frame_index`, `source_timestamp_seconds`, `role`, `asset_path`, `asset_sha256`, `media_type`, `created_at`, `enabled`, and `mode`. Both identities are UUIDs. Assets are addressed by UUID rather than artifact number, leaving the same record shape usable for future manually selected frames from any accepted source card.
 
 Generation ancestry and timeline order are separate fields. The MVP UI appends a linear tail, while the schema does not infer a parent from `timeline_index`.
 

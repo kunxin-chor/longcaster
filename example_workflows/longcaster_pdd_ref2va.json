@@ -660,7 +660,9 @@
         "euler",
         true,
         "match",
-        "resume-1"
+        "resume-1",
+        true,
+        true
       ]
     },
     {
@@ -778,7 +780,7 @@
         "frame_rate": 24,
         "loop_count": 0,
         "filename_prefix": "video/longcaster_preview",
-        "format": "video/longcaster_nvenc_h264-mp4",
+        "format": "video/longcaster_nvenc_h264-mp4.json",
         "preset": "p4",
         "cq": 17,
         "pix_fmt": "yuv420p",
