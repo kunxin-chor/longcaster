@@ -1,0 +1,2 @@
+# LongCaster uses ComfyUI and sibling mmh3_media runtime dependencies.
+# No standalone pip dependencies are added here.
