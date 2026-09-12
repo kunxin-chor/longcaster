@@ -363,6 +363,7 @@ class ProjectStore:
                 "generated_frame_count": int(generated_frame_count),
                 "actual_new_frame_count": int(actual_new_frame_count),
                 "actual_duration_seconds": float(actual_duration_seconds),
+                "preview": None,
                 "updated_at": utc_now(),
                 "last_error": None,
                 "draft_inputs_dirty": False,
@@ -577,6 +578,67 @@ class ProjectStore:
                 "ended_at": utc_now(),
             }
             self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def remove_draft_tail(self) -> dict[str, Any]:
+        """Discard the active unaccepted tail and return to its accepted predecessor."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot remove a draft card while another operation is pending")
+            card = self._active_card(manifest)
+            if card is not manifest["cards"][-1]:
+                raise ProjectError("only the active last card can be removed")
+            if card["status"] not in {"EMPTY", "DRAFT", "FAILED"}:
+                raise ProjectError(
+                    f"remove draft requires an unaccepted card; current state is {card['status']}"
+                )
+            if card.get("publication_history"):
+                raise ProjectError("a previously published card cannot be removed; retry or accept it instead")
+            if len(manifest["cards"]) < 2:
+                raise ProjectError("the first card cannot be removed because there is no previous accepted card")
+            predecessor = manifest["cards"][-2]
+            if (
+                card.get("timeline_predecessor_id") != predecessor["id"]
+                or predecessor["status"] != "ACCEPTED"
+            ):
+                raise ProjectError("the removable draft must follow an accepted card")
+
+            removed_card_id = card["id"]
+            disposable_files: list[Path] = []
+            for relative in (
+                card.get("draft_path"),
+                (card.get("preview") or {}).get("asset_path"),
+            ):
+                if relative:
+                    disposable_files.append(self.absolute_path(relative))
+
+            manifest["cards"].pop()
+            manifest["active_card_id"] = predecessor["id"]
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()),
+                "kind": "remove_draft_tail",
+                "status": "complete",
+                "card_id": removed_card_id,
+                "restored_card_id": predecessor["id"],
+                "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+
+            for path in disposable_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            for relative_directory in (
+                f"previews/{removed_card_id}",
+                f"anchors/{removed_card_id}",
+                f"anchor_candidates/{removed_card_id}",
+            ):
+                try:
+                    shutil.rmtree(self.absolute_path(relative_directory), ignore_errors=True)
+                except OSError:
+                    pass
             return deepcopy(manifest)
 
     def add_anchor(self, card_id: str, anchor: dict[str, Any]) -> dict[str, Any]:

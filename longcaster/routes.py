@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,57 @@ from server import PromptServer
 from .project import ProjectError, ProjectStore
 
 
+class _LongCasterWebLogHandler(logging.Handler):
+    """Forward LongCaster logger records to connected ComfyUI browser clients."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        instance = getattr(PromptServer, "instance", None)
+        if instance is None or not hasattr(instance, "send_sync"):
+            return
+        try:
+            instance.send_sync("longcaster_log", {
+                "level": record.levelname.lower(),
+                "message": self.format(record),
+                "timestamp": record.created,
+            })
+        except Exception:
+            # Logging must never interrupt generation or route handling.
+            return
+
+
+_WEB_LOG_HANDLER: logging.Handler | None = None
+
+
+def _install_web_log_handler() -> None:
+    global _WEB_LOG_HANDLER
+    if _WEB_LOG_HANDLER is not None:
+        return
+    logger = logging.getLogger("longcaster")
+    existing = next(
+        (item for item in logger.handlers if getattr(item, "_longcaster_web_handler", False)),
+        None,
+    )
+    if existing is not None:
+        _WEB_LOG_HANDLER = existing
+        return
+    handler = _LongCasterWebLogHandler()
+    handler._longcaster_web_handler = True
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    logger.addHandler(handler)
+    _WEB_LOG_HANDLER = handler
+
+
 def _projects_root() -> Path:
     return Path(folder_paths.get_output_directory()) / "longcaster_projects"
+
+
+def _current_preview(card: dict[str, Any]) -> dict[str, Any] | None:
+    preview = card.get("preview") or {}
+    if not preview.get("asset_path"):
+        return None
+    if preview.get("source_artifact_sha256") != card.get("artifact_sha256"):
+        return None
+    return preview
 
 
 def _identity_state(
@@ -28,7 +78,7 @@ def _identity_state(
             "preview_frames": card.get("actual_new_frame_count"),
             "max_frame_index": max(0, int(card.get("actual_new_frame_count") or 1) - 1),
             "duration_seconds": max(0, int(card.get("actual_new_frame_count") or 1) - 1) / 24.0,
-            "preview_available": bool(card.get("preview", {}).get("asset_path")),
+            "preview_available": _current_preview(card) is not None,
         }
         for card in manifest["cards"]
         if card["status"] == "ACCEPTED"
@@ -63,6 +113,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
     current_state = next(
         (item for item in reversed(anchors) if item.get("role") == "current_state"), None
     )
+    preview = _current_preview(card)
     return {
         "id": card["id"],
         "timeline_index": card["timeline_index"],
@@ -81,8 +132,13 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "continuation_strategy": card.get("continuation_strategy"),
         "reference_set": card.get("reference_set"),
         "accepted_publication_id": card.get("accepted_publication_id"),
+        "has_publication_history": bool(card.get("publication_history")),
         "draft_inputs_dirty": card.get("draft_inputs_dirty", False),
-        "preview_available": bool((card.get("preview") or {}).get("asset_path")),
+        "preview_available": preview is not None,
+        "preview_version": (
+            preview.get("asset_sha256") or preview.get("source_artifact_sha256")
+            if preview else None
+        ),
         "current_state_anchor_id": current_state.get("anchor_id") if current_state else None,
         "current_state_anchor": current_state,
         "identity_anchor_ids": [
@@ -270,10 +326,10 @@ async def get_cards_preview(request: web.Request) -> web.StreamResponse:
         store = ProjectStore(_projects_root(), request.query.get("project", ""))
         manifest = store.load()
         card = store.card(manifest, request.query.get("card", ""))
-        preview = card.get("preview") or {}
-        asset_path = preview.get("asset_path")
-        if not asset_path:
-            raise ProjectError("this card has no registered project preview")
+        preview = _current_preview(card)
+        if preview is None:
+            raise ProjectError("this card has no preview for its current artifact")
+        asset_path = preview["asset_path"]
         path = store.absolute_path(asset_path)
         if not path.is_file():
             raise ProjectError("the registered project preview is missing")
@@ -412,6 +468,7 @@ def register_routes() -> bool:
     instance = getattr(PromptServer, "instance", None)
     if instance is None:
         return False
+    _install_web_log_handler()
     instance.routes.get("/longcaster/identity/projects")(list_identity_projects)
     instance.routes.get("/longcaster/identity/state")(get_identity_state)
     instance.routes.get("/longcaster/identity/preview")(get_identity_preview)

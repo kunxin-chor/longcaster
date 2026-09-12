@@ -107,7 +107,7 @@ Load [longcaster_standard_t2va.json](example_workflows/longcaster_standard_t2va.
 
 Every bundled sample drives LongCaster's `width` and `height` from ComfyUI's built-in **Resolution Selector**. The default is `9:16 (Portrait Widescreen)`, `0.5 MP`, and a multiple of 32, which resolves to **544 × 960** and matches `longcaster_joined_00001_.mp4`.
 
-Change the selector before creating a project. Resolution is part of the persistent project contract, so changing it for an existing project is rejected; use a new `project_name` for a different canvas size.
+Change the selector before creating a project through the node. Existing projects always use their saved canvas size, even when the connected selector supplies different dimensions; use a new `project_name` for a different canvas size.
 
 ## Card controls
 
@@ -174,7 +174,7 @@ The identity image is appended to MiniMax H3's native `minimax_refs` image refer
 To select an identity checkpoint with the visual picker:
 
 1. Generate and accept a card containing a clear view of the subject's face.
-2. Click **Refresh** on the identity node and choose the project and accepted source card.
+2. Open the Project Interface, then click **Refresh** on the identity node and choose the accepted source card. The identity node's project display is read-only and follows the Project Interface selection.
    For an older accepted card that predates project previews, click **Build preview** once. This loads only the Video VAE, decodes the accepted MMH3, and creates a silent navigation MP4 under the project.
 3. Scrub the embedded card video and pause on a clear face. The picker converts the playhead to the visible 24 fps frame automatically; the hidden 39-frame continuation prefix is never counted.
 4. Use the one-frame arrow buttons for precise adjustment. **Preview exact MMH3 frame** can decode the exact source frame before committing it.
@@ -201,9 +201,15 @@ For the face-reappearance test, select a clear frontal frame from an early accep
 
 ## LongCaster Studio project and cards interface
 
-Click **Open Cards Interface** on the **MiniMax H3 LongCaster** project node to open LongCaster Studio. The project selector opens any validated project under `ComfyUI/output/longcaster_projects`, and **New Project** creates a project with its initial mode, canvas, duration, and seed. Its resolution controls use the built-in ComfyUI Resolution Selector presets and megapixel calculation, with width and height fixed to a multiple of 32; the resolved pixel size is shown before creation. Opening a project also synchronizes the project name, mode, and canvas values on the LongCaster node. Existing projects keep their canvas and generation mode fixed after their first render.
+Click **Open Cards Interface** on the **MiniMax H3 LongCaster** project node to open LongCaster Studio. The project selector opens any validated project under `ComfyUI/output/longcaster_projects`, and **New Project** creates a project with its initial mode, canvas, duration, and seed. Its resolution controls use the built-in ComfyUI Resolution Selector presets and megapixel calculation, with width and height fixed to a multiple of 32; the resolved pixel size is shown before creation. Generate and Retry use the saved project canvas even if width and height remain connected to a different Resolution Selector setting. Existing projects keep their canvas and generation mode fixed after their first render.
+
+The persistent execution panel sits at the bottom of Studio and shows the current ComfyUI node or generation stage, sampling percentage, completion/interruption/failure state, LongCaster backend log messages, and execution tracebacks. Its log retains the latest 250 entries and follows new output while Studio remains open. The compact status and progress row remains visible; **Show Execution Log** and **Hide Execution Log** toggle the fixed-height scrolling log, and the preference is retained in the browser. **Stop Generation / Unlock** is always available in the Studio header: it requests a ComfyUI interrupt and then queues LongCaster's cancel action to reconcile the pending operation and release the project lock.
+
+The Project Interface is authoritative for the workflow's current project. Its selection updates the LongCaster node's mode, canvas, active-card prompt, duration, seed, title, and status, plus the project used by the Identity Anchor and Timeline Export nodes. The bundled reference workflows also connect `project_state` directly to both dependent nodes, so the saved project wins over stale widget values during backend execution. Editing the LongCaster node's project name loads that existing project into the interface. Draft and identity actions wait for project loading and pending card saves; results from another project cannot change the current selection.
 
 The workspace lists every card and its status, registered preview, readable ancestry, state anchor, identities, reference summary, prompt hash, duration, and seed. The active unrendered card can choose **Continue previous card (direct MMH3)** or **Independent shot**. Direct MMH3 uses the accepted predecessor's joint audio/video latent and 39-frame context; Independent does not use a generation parent.
+
+The selected last card shows the action appropriate to its state. **Unpublish Card** appears for the active accepted tail and reopens it as a retryable draft while retaining the immutable accepted master in publication history. **Remove Draft Card** appears for an appended `EMPTY`, `DRAFT`, or `FAILED` tail; after confirmation it discards that unaccepted card and its derived draft/preview files, then makes the previous accepted card active. A draft cannot be unpublished because it has no accepted publication. The first card cannot be removed because there is no previous accepted card to return to.
 
 Identity checkpoints are shown with their source card, visible frame, scope, label, image, and active state. They can be selected, enabled, disabled, or cleared in the workspace. An accepted card can create another identity at its current preview playhead through the workflow's **MiniMax H3 LongCaster Identity Anchor** node. A missing accepted-card preview can also be decoded and built there when that node has a Video VAE connection.
 
@@ -227,16 +233,18 @@ The separate **MiniMax H3 LongCaster Decode** node decodes the packet for previe
 
 The example's NVENC card previews are written under `ComfyUI/output/video/` and registered under the project's `previews/` directory. Accepted card masters remain under the project `clips/` directory.
 
+After Generate or Retry successfully replaces a draft, Studio temporarily clears the superseded preview and reloads when **MiniMax H3 LongCaster Project Preview** registers the new artifact's MP4. The preview URL includes its content version, so the browser does not retain the prior take for the same card.
+
 ## Joined timeline export
 
-The PDD REF2VA example includes **MiniMax H3 LongCaster Timeline Export**. It reads accepted `.mmh3` masters in timeline order, decodes one card at a time, removes the recorded continuation prefix from every continuation card, and streams the retained frames to NVENC. This keeps the complete decoded timeline out of RAM.
+Both PDD reference examples include **MiniMax H3 LongCaster Timeline Export**, titled **Join accepted cards (enable, then Queue)**. It reads accepted `.mmh3` masters in timeline order, decodes one card at a time, removes the recorded continuation prefix from every continuation card, and streams the retained frames to NVENC. This keeps the complete decoded timeline out of RAM.
 
 To test a long clip:
 
 1. Generate and accept Card 1.
 2. Append, generate, and accept at least Card 2. Repeat for more cards.
 3. Leave the main LongCaster node on `resume`.
-4. Set the export node's `project_name` to the same project, turn `enabled=true`, and Queue Prompt.
+4. Confirm the export node shows the Project Interface's current project, turn `enabled=true`, and Queue Prompt. Its connected `project_state` is authoritative.
 5. Open `ComfyUI/output/video/longcaster_joined_#####_.mp4` or use the preview shown on the export node.
 
 By default, only immutable accepted cards are included. Turn on `include_active_draft` to append the current draft for a temporary continuity review. The joined exporter uses H.264 NVENC with editable preset and CQ controls plus AAC audio; its defaults are `p4`, CQ 17, and 192 kbps. Set `enabled=false` again after export so ordinary card operations do not rebuild the timeline.
@@ -260,6 +268,13 @@ The standard-library suite does not import ComfyUI or require a GPU:
 
 ```powershell
 python -m unittest discover -s tests -v
+```
+
+Frontend project synchronization checks run with Node.js:
+
+```powershell
+node --test tests/test_project_sync.cjs
+node --check web/longcaster.js
 ```
 
 The real MMH3 backend smoke uses ComfyUI's Python and the MMH3 repository path. It writes a synthetic H3 latent, saves it, launches a fresh process, reloads it, builds a direct continuation, and saves the next card:

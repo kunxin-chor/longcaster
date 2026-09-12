@@ -10,24 +10,90 @@ function commandId() {
     return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function queueAction(node, action) {
+function isNodeType(node, name) {
+    return node?.comfyClass === name || node?.type === name;
+}
+
+function projectAuthority(node) {
+    const graph = node?.graph;
+    if (isNodeType(node, "LongCasterProject")) return node;
+    if (graph?.longcasterProjectAuthority) return graph.longcasterProjectAuthority;
+    return graph?._nodes?.find((item) => isNodeType(item, "LongCasterProject") && item.longcasterCardsWorkspace);
+}
+
+function syncProjectNode(node, state) {
+    const card = state.active_card || state.cards?.find((item) => item.id === state.active_card_id);
+    const values = {
+        project_name: state.project, generation_mode: state.generation_mode,
+        width: state.width, height: state.height,
+        prompt: card?.assembled_prompt ?? card?.prompt,
+        duration_seconds: card?.requested_duration_seconds, seed: card?.seed,
+    };
+    for (const [name, value] of Object.entries(values)) {
+        const item = widget(node, name);
+        if (item && value !== undefined) item.value = value;
+    }
+    node.longcasterState = { ...state, active_card: card, card_count: state.card_count ?? state.cards?.length };
+    node.title = `MiniMax H3 LongCaster · ${state.project} · ${card?.status ?? "UNKNOWN"}`;
+    for (const dependent of node.graph?._nodes || []) {
+        if (!isNodeType(dependent, "LongCasterIdentityAnchor") && !isNodeType(dependent, "LongCasterTimelineExport")) continue;
+        const project = widget(dependent, "project_name");
+        if (project) project.value = state.project;
+        dependent.longcasterProjectState = state;
+        if (isNodeType(dependent, "LongCasterTimelineExport")) {
+            dependent.title = `Join ${state.project} cards (enable, then Queue)`;
+        } else if (dependent.longcasterIdentityProjectSelect) {
+            refreshIdentityProject(dependent, state.project);
+        }
+    }
+    node.graph?.setDirtyCanvas(true, true);
+}
+
+async function queueAction(node, action) {
+    const authority = projectAuthority(node);
+    const workspace = authority?.longcasterCardsWorkspace;
+    if (workspace && action !== "cancel") {
+        if (workspace.loading && !await workspace.loading) return;
+        if (!await workspace.flush()) return;
+        if (workspace.state) syncProjectNode(authority, workspace.state);
+    }
+    if (authority && authority !== node) {
+        const projectAction = widget(authority, "action");
+        const projectCommand = widget(authority, "command_id");
+        if (projectAction) projectAction.value = "resume";
+        if (projectCommand) projectCommand.value = commandId();
+    }
     const actionWidget = widget(node, "action");
     const commandWidget = widget(node, "command_id");
     if (actionWidget) actionWidget.value = action;
     if (commandWidget) commandWidget.value = commandId();
     node.graph?.setDirtyCanvas(true, true);
-    app.queuePrompt(0, 1);
+    workspace?.execution?.begin(action);
+    try {
+        const queued = await app.queuePrompt(0, 1);
+        workspace?.execution?.bindPrompt(queued?.prompt_id);
+        return queued;
+    } catch (error) {
+        workspace?.execution?.fail(`Queue failed: ${error.message}`);
+        return null;
+    }
 }
 
 async function stopAndUnlock(node) {
+    const workspace = projectAuthority(node)?.longcasterCardsWorkspace;
+    workspace?.execution?.stopping();
     try {
-        await api.fetchApi("/interrupt", {
+        const response = await api.fetchApi("/interrupt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({}),
         });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        workspace?.execution?.append("warning", "Interrupt acknowledged by ComfyUI. Queueing project unlock.");
+    } catch (error) {
+        workspace?.execution?.append("error", `Interrupt request failed: ${error.message}`);
     } finally {
-        queueAction(node, "cancel");
+        await queueAction(node, "cancel");
     }
 }
 
@@ -134,28 +200,40 @@ function updateIdentityPanel(node, state) {
 }
 
 async function refreshIdentityProjects(node) {
-    try {
-        const body = await responseJson(await api.fetchApi("/longcaster/identity/projects"));
-        const select = node.longcasterIdentityProjectSelect;
-        const current = String(widget(node, "project_name")?.value ?? "");
+    const authority = projectAuthority(node);
+    const project = authority?.longcasterCardsWorkspace?.state?.project
+        || widget(authority, "project_name")?.value
+        || widget(node, "project_name")?.value;
+    return refreshIdentityProject(node, project);
+}
+
+async function refreshIdentityProject(node, project) {
+    if (!project) return false;
+    const epoch = (node.longcasterIdentityLoadEpoch || 0) + 1;
+    node.longcasterIdentityLoadEpoch = epoch;
+    const projectWidget = widget(node, "project_name");
+    if (projectWidget) projectWidget.value = project;
+    const select = node.longcasterIdentityProjectSelect;
+    if (select) {
         select.replaceChildren();
-        for (const project of body.projects || []) {
-            const option = document.createElement("option");
-            option.value = project.project;
-            option.textContent = project.project;
-            select.append(option);
-        }
-        const state = body.projects?.find((item) => item.project === current) || body.projects?.[0];
-        if (state) {
-            select.value = state.project;
-            const projectWidget = widget(node, "project_name");
-            if (projectWidget) projectWidget.value = state.project;
-            updateIdentityPanel(node, state);
-        } else {
-            node.longcasterIdentityStatus.textContent = "No LongCaster projects found.";
-        }
+        const option = document.createElement("option");
+        option.value = project;
+        option.textContent = project;
+        select.append(option);
+        select.value = project;
+        select.disabled = true;
+    }
+    try {
+        const subject = encodeURIComponent(widget(node, "subject_id")?.value || "<Subject 1>");
+        const state = await responseJson(await api.fetchApi(
+            `/longcaster/identity/state?project=${encodeURIComponent(project)}&subject_id=${subject}`,
+        ));
+        if (epoch !== node.longcasterIdentityLoadEpoch || widget(node, "project_name")?.value !== project) return false;
+        updateIdentityPanel(node, state);
+        return true;
     } catch (error) {
-        node.longcasterIdentityStatus.textContent = `Refresh failed: ${error.message}`;
+        if (epoch === node.longcasterIdentityLoadEpoch) node.longcasterIdentityStatus.textContent = `Refresh failed: ${error.message}`;
+        return false;
     }
 }
 
@@ -184,6 +262,7 @@ function createIdentityPicker(node) {
     Object.assign(projectRow.style, { display: "grid", gridTemplateColumns: "70px 1fr auto", gap: "6px", alignItems: "center" });
     const projectLabel = document.createElement("span"); projectLabel.textContent = "Project";
     const projectSelect = document.createElement("select");
+    projectSelect.disabled = true;
     const refresh = document.createElement("button"); refresh.textContent = "Refresh";
     projectRow.append(projectLabel, projectSelect, refresh);
 
@@ -233,16 +312,6 @@ function createIdentityPicker(node) {
     node.longcasterIdentityStatus = status;
 
     refresh.onclick = () => refreshIdentityProjects(node);
-    projectSelect.onchange = async () => {
-        const projectWidget = widget(node, "project_name");
-        if (projectWidget) projectWidget.value = projectSelect.value;
-        try {
-            const query = `project=${encodeURIComponent(projectSelect.value)}&subject_id=${encodeURIComponent(widget(node, "subject_id")?.value || "<Subject 1>")}`;
-            updateIdentityPanel(node, await responseJson(await api.fetchApi(`/longcaster/identity/state?${query}`)));
-        } catch (error) {
-            status.textContent = `Project load failed: ${error.message}`;
-        }
-    };
     cardSelect.onchange = () => {
         const sourceWidget = widget(node, "source_card");
         if (sourceWidget) sourceWidget.value = cardSelect.value;
@@ -390,17 +459,18 @@ function createCardsWorkspace(node) {
     const root = cardsElement("div", "lc-cards-overlay");
     const style = document.createElement("style");
     style.textContent = `
-        .lc-cards-overlay{position:fixed;inset:0;z-index:10020;background:#08131d;color:#dce8f3;font:13px Inter,system-ui,sans-serif;display:grid;grid-template-rows:auto auto 1fr auto}
+        .lc-cards-overlay{position:fixed;inset:0;z-index:10020;background:#08131d;color:#dce8f3;font:13px Inter,system-ui,sans-serif;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto}
         .lc-cards-overlay[hidden],.lc-cards-overlay [hidden]{display:none!important}.lc-cards-top{display:flex;align-items:center;gap:12px;padding:10px 14px;background:#0c1c29;border-bottom:1px solid #254052}
         .lc-cards-brand{font-size:20px;font-weight:700;margin-right:8px}.lc-cards-top select,.lc-cards-overlay input,.lc-cards-overlay select,.lc-cards-overlay textarea{background:#0d2131;color:#e7f1f8;border:1px solid #29465b;border-radius:5px;padding:7px;box-sizing:border-box}
         .lc-cards-top button,.lc-cards-overlay button{background:#173149;color:#dce8f3;border:1px solid #31516a;border-radius:5px;padding:7px 11px;cursor:pointer}.lc-cards-overlay button:hover:not(:disabled){background:#1f4565}.lc-cards-overlay button:disabled{opacity:.42;cursor:default}
-        .lc-cards-primary{background:#0968bd!important;border-color:#1684e6!important}.lc-cards-accept{background:#088653!important;border-color:#0ebd72!important}.lc-cards-close{margin-left:auto}
+        .lc-cards-primary{background:#0968bd!important;border-color:#1684e6!important}.lc-cards-accept{background:#088653!important;border-color:#0ebd72!important}.lc-cards-danger{background:#8f2633!important;border-color:#d95764!important}.lc-cards-close{margin-left:auto}
         .lc-cards-projectpath{color:#89a2b4;font:11px ui-monospace,monospace}.lc-cards-new{display:grid;grid-template-columns:2fr repeat(6,minmax(90px,1fr)) auto auto;gap:8px;align-items:end;padding:10px 14px;background:#102333;border-bottom:1px solid #29465b}.lc-cards-new[hidden]{display:none}.lc-cards-new label{display:grid;gap:4px;color:#a9bdca}.lc-cards-resolution{min-height:31px;display:flex;align-items:center;color:#dce8f3;font:12px ui-monospace,monospace;white-space:nowrap}
         .lc-cards-main{min-height:0;display:grid;grid-template-columns:260px minmax(620px,1fr) 420px}.lc-cards-sidebar,.lc-cards-preview{min-height:0;overflow:auto;background:#0a1824;padding:10px;border-right:1px solid #20394b}.lc-cards-preview{border-right:0;border-left:1px solid #20394b}
         .lc-cards-list{display:grid;gap:5px}.lc-card-item{display:grid!important;grid-template-columns:34px 1fr;gap:7px;text-align:left;padding:9px!important}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-EMPTY{color:#94a4b0}
-        .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}
+        .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-unpublish,.lc-cards-remove{margin-left:auto}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}
         .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
-        .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
+        .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
+        .lc-cards-log{height:132px;min-height:0;overflow-y:auto;overflow-x:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
     `;
     document.head.append(style);
 
@@ -416,8 +486,9 @@ function createCardsWorkspace(node) {
     const accept = cardsElement("button", "lc-cards-accept", "Accept Draft");
     const append = cardsElement("button", "lc-cards-primary", "Append Card");
     actions.append(generate, retry, accept, append);
+    const stop = cardsElement("button", "lc-cards-danger", "Stop Generation / Unlock");
     const close = cardsElement("button", "lc-cards-close", "Close");
-    top.append(projectSelect, refresh, newProject, projectPath, actions, close);
+    top.append(projectSelect, refresh, newProject, projectPath, actions, stop, close);
 
     const newPanel = cardsElement("div", "lc-cards-new"); newPanel.hidden = true;
     const newName = document.createElement("input"); newName.placeholder = "my_project";
@@ -440,6 +511,18 @@ function createCardsWorkspace(node) {
     const field = (label, input) => { const wrapper = document.createElement("label"); wrapper.append(document.createTextNode(label), input); return wrapper; };
     newPanel.append(field("Project folder name", newName), field("Generation mode", newMode), field("Aspect ratio", newAspect), field("Megapixels (MP)", newMegapixels), field("Resolved size (×32)", newResolution), field("First-card seconds", newDuration), field("Seed", newSeed), createProject, cancelCreate);
 
+    const executionPanel = cardsElement("section", "lc-cards-execution");
+    const executionState = cardsElement("span", "lc-cards-execution-state", "Idle");
+    const executionStage = cardsElement("span", "lc-cards-execution-stage", "No LongCaster operation is running.");
+    const executionProgress = document.createElement("progress"); executionProgress.max = 1; executionProgress.value = 0;
+    const executionPercent = cardsElement("span", "lc-cards-execution-percent", "0%");
+    const executionToggle = cardsElement("button", "", "Hide Execution Log");
+    const executionLog = cardsElement("pre", "lc-cards-log", "LongCaster execution log ready.");
+    executionLog.tabIndex = 0;
+    executionLog.setAttribute("role", "log");
+    executionLog.setAttribute("aria-live", "polite");
+    executionPanel.append(executionState, executionStage, executionProgress, executionPercent, executionToggle, executionLog);
+
     const main = cardsElement("div", "lc-cards-main");
     const sidebar = cardsElement("aside", "lc-cards-sidebar");
     const list = cardsElement("div", "lc-cards-list");
@@ -450,7 +533,9 @@ function createCardsWorkspace(node) {
     const cardTitle = cardsElement("h2", "", "Card");
     const nextCard = cardsElement("button", "", "›");
     const cardStatus = cardsElement("span", "");
-    cardHead.append(previousCard, cardTitle, nextCard, cardStatus);
+    const unpublish = cardsElement("button", "lc-cards-unpublish", "Unpublish Card");
+    const removeDraft = cardsElement("button", "lc-cards-remove", "Remove Draft Card");
+    cardHead.append(previousCard, cardTitle, nextCard, cardStatus, unpublish, removeDraft);
     const tabs = cardsElement("div", "lc-cards-tabs");
     const section = cardsElement("section", "lc-cards-section");
     const sectionBar = cardsElement("div", "lc-cards-sectionbar");
@@ -536,7 +621,7 @@ function createCardsWorkspace(node) {
     const message = cardsElement("span", "", "Loading…");
     const saveState = cardsElement("span", "lc-cards-save");
     footer.append(message, saveState);
-    root.append(top, newPanel, main, footer);
+    root.append(top, newPanel, main, executionPanel, footer);
     document.body.append(root);
 
     const workspace = {
@@ -545,21 +630,151 @@ function createCardsWorkspace(node) {
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
     };
     node.longcasterCardsWorkspace = workspace;
+    node.graph.longcasterProjectAuthority = node;
 
     const selectedCard = () => workspace.state?.cards?.find((card) => card.id === workspace.selectedCardId);
     const editable = (card) => Boolean(card && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED"].includes(card.status));
     const setMessage = (value, error = false) => { message.textContent = value; message.className = error ? "lc-cards-error" : ""; };
+    const scrollExecutionLogToEnd = () => {
+        const apply = () => { executionLog.scrollTop = executionLog.scrollHeight; };
+        if (typeof globalThis.requestAnimationFrame === "function") globalThis.requestAnimationFrame(apply);
+        else setTimeout(apply, 0);
+    };
+    const execution = {
+        active: false,
+        action: null,
+        promptId: null,
+        ignoredPromptIds: new Set(),
+        entries: [],
+        render(status, stage, value = executionProgress.value, maximum = executionProgress.max) {
+            const safeMaximum = Math.max(1, Number(maximum) || 1);
+            const safeValue = Math.max(0, Math.min(safeMaximum, Number(value) || 0));
+            executionState.textContent = status;
+            executionState.className = `lc-cards-execution-state ${status.toLowerCase()}`;
+            executionStage.textContent = stage;
+            executionProgress.max = safeMaximum;
+            executionProgress.value = safeValue;
+            executionPercent.textContent = `${Math.round(safeValue / safeMaximum * 100)}%`;
+        },
+        append(level, text, timestamp = Date.now()) {
+            const instant = new Date(Number(timestamp) < 100000000000 ? Number(timestamp) * 1000 : Number(timestamp));
+            const time = Number.isNaN(instant.getTime()) ? new Date().toLocaleTimeString() : instant.toLocaleTimeString();
+            const messageText = String(text || "").trim();
+            if (!messageText) return;
+            this.entries.push(`[${time}] ${String(level || "info").toUpperCase()}  ${messageText}`);
+            if (this.entries.length > 250) this.entries.splice(0, this.entries.length - 250);
+            executionLog.textContent = this.entries.join("\n");
+            scrollExecutionLogToEnd();
+        },
+        begin(action) {
+            if (action === "cancel" && this.promptId) this.ignoredPromptIds.add(this.promptId);
+            this.active = true;
+            this.action = action;
+            this.promptId = null;
+            const label = action === "cancel" ? "Unlocking project" : `${action} queued`;
+            this.render(action === "cancel" ? "Unlocking" : "Queued", label, 0, 1);
+            this.append("info", label);
+        },
+        bindPrompt(promptId) {
+            if (promptId != null) this.promptId = String(promptId);
+        },
+        accepts(detail) {
+            if (!this.active) return false;
+            const promptId = detail?.prompt_id ?? detail?.promptId;
+            if (promptId != null && this.ignoredPromptIds.has(String(promptId))) return false;
+            if (promptId != null && this.promptId == null) this.promptId = String(promptId);
+            return promptId == null || this.promptId == null || String(promptId) === this.promptId;
+        },
+        fail(text) {
+            this.active = false;
+            this.render("Failed", text);
+            this.append("error", text);
+        },
+        stopping() {
+            this.render("Stopping", "Interrupting the active ComfyUI prompt and releasing the project lock.");
+            this.append("warning", "Stop requested.");
+        },
+    };
+    workspace.execution = execution;
+
+    let executionLogExpanded = false;
+    try { executionLogExpanded = globalThis.localStorage?.getItem("longcaster.executionLogExpanded") === "true"; } catch (_) {}
+    const renderExecutionLogVisibility = () => {
+        executionPanel.classList.toggle("collapsed", !executionLogExpanded);
+        executionToggle.textContent = executionLogExpanded ? "Hide Execution Log" : "Show Execution Log";
+        executionToggle.setAttribute("aria-expanded", String(executionLogExpanded));
+        if (executionLogExpanded) scrollExecutionLogToEnd();
+    };
+    executionToggle.onclick = () => {
+        executionLogExpanded = !executionLogExpanded;
+        try { globalThis.localStorage?.setItem("longcaster.executionLogExpanded", String(executionLogExpanded)); } catch (_) {}
+        renderExecutionLogVisibility();
+    };
+    renderExecutionLogVisibility();
+
+    const eventDetail = (event) => event?.detail ?? event ?? {};
+    const nodeLabel = (nodeId) => {
+        const target = nodeId == null ? null : node.graph?.getNodeById?.(nodeId);
+        return target?.title || target?.type || target?.comfyClass || (nodeId == null ? "workflow" : `node ${nodeId}`);
+    };
+    const listen = (name, handler) => api.addEventListener(name, (event) => handler(eventDetail(event)));
+    listen("execution_start", (detail) => {
+        if (!execution.accepts(detail)) return;
+        execution.render("Running", `${execution.action || "LongCaster"} started`, 0, 1);
+        execution.append("info", `Execution started${execution.promptId ? ` · prompt ${execution.promptId}` : ""}.`);
+    });
+    listen("executing", (detail) => {
+        if (!execution.accepts(detail) || detail.node == null) return;
+        const label = nodeLabel(detail.node);
+        execution.render("Running", label);
+        execution.append("info", `Running ${label}.`);
+    });
+    listen("progress", (detail) => {
+        if (!execution.accepts(detail)) return;
+        const label = nodeLabel(detail.node ?? detail.node_id);
+        execution.render("Running", label, detail.value, detail.max);
+    });
+    listen("execution_cached", (detail) => {
+        if (!execution.accepts(detail)) return;
+        const count = Array.isArray(detail.nodes) ? detail.nodes.length : 0;
+        if (count) execution.append("info", `${count} node${count === 1 ? "" : "s"} loaded from cache.`);
+    });
+    listen("executed", (detail) => {
+        if (!execution.accepts(detail)) return;
+        execution.append("info", `Completed ${nodeLabel(detail.node)}.`);
+    });
+    listen("execution_success", (detail) => {
+        if (!execution.accepts(detail)) return;
+        execution.active = false;
+        execution.render("Completed", `${execution.action || "LongCaster"} completed`, 1, 1);
+        execution.append("info", "Execution completed.");
+    });
+    listen("execution_interrupted", (detail) => {
+        if (!execution.accepts(detail)) return;
+        execution.active = false;
+        const label = `Interrupted at ${nodeLabel(detail.node ?? detail.node_id)}`;
+        execution.render("Interrupted", label);
+        execution.append("warning", label);
+    });
+    listen("execution_error", (detail) => {
+        if (!execution.accepts(detail)) return;
+        execution.active = false;
+        const label = nodeLabel(detail.node ?? detail.node_id);
+        const error = detail.exception_message || detail.error || "Unknown execution error";
+        execution.render("Failed", `${label}: ${error}`);
+        execution.append("error", `${label}: ${error}`);
+        const traceback = Array.isArray(detail.traceback) ? detail.traceback.join("") : detail.traceback;
+        if (traceback) execution.append("error", traceback);
+    });
+    listen("longcaster_log", (detail) => {
+        if (execution.active) execution.append(detail.level || "info", detail.message, detail.timestamp);
+    });
+    stop.onclick = () => stopAndUnlock(node);
+
     const shortId = (value) => value ? String(value).slice(0, 8) : "none";
     const cardLabel = (cardId) => {
         const item = workspace.state?.cards?.find((card) => card.id === cardId);
         return item ? `Card ${item.timeline_index + 1} · ${item.title || "Untitled"} · ${shortId(item.id)}` : "none";
-    };
-    const syncProjectNode = (state) => {
-        for (const [name, value] of [["project_name", state.project], ["generation_mode", state.generation_mode], ["width", state.width], ["height", state.height]]) {
-            const item = widget(node, name);
-            if (item) item.value = value;
-        }
-        node.graph?.setDirtyCanvas(true, true);
     };
     const renderSaveState = () => {
         saveState.textContent = workspace.saving ? "Saving…" : workspace.dirty ? "Unsaved changes" : `Saved · revision ${workspace.state?.revision ?? "?"}`;
@@ -568,7 +783,8 @@ function createCardsWorkspace(node) {
 
     function updateState(state, keepSelection = true) {
         workspace.state = state;
-        syncProjectNode(state);
+        workspace.requestedProject = state.project;
+        syncProjectNode(node, state);
         projectPath.textContent = state.project_folder || "";
         const exists = state.cards?.some((card) => card.id === workspace.selectedCardId);
         if (!keepSelection || !exists) workspace.selectedCardId = state.active_card_id || state.cards?.[0]?.id;
@@ -642,8 +858,23 @@ function createCardsWorkspace(node) {
         retry.disabled = card.id !== state.active_card_id || card.status !== "DRAFT" || Boolean(state.pending_operation);
         accept.disabled = card.id !== state.active_card_id || card.status !== "DRAFT" || card.draft_inputs_dirty || Boolean(state.pending_operation);
         append.disabled = card.id !== state.active_card_id || card.status !== "ACCEPTED" || Boolean(state.pending_operation);
+        const isLastCard = card.timeline_index === state.cards.length - 1;
+        const isRemovableDraft = ["EMPTY", "DRAFT", "FAILED"].includes(card.status) && !card.has_publication_history;
+        unpublish.hidden = !isLastCard || card.status !== "ACCEPTED";
+        unpublish.disabled = card.id !== state.active_card_id || card.status !== "ACCEPTED" || Boolean(state.pending_operation);
+        unpublish.title = "Reopen the latest accepted card as a draft while retaining its immutable publication history.";
+        removeDraft.hidden = !isLastCard || !isRemovableDraft;
+        removeDraft.disabled = card.id !== state.active_card_id || state.cards.length < 2 || Boolean(state.pending_operation);
+        removeDraft.title = state.cards.length < 2
+            ? "The first card cannot be removed because there is no previous accepted card."
+            : "Discard this unaccepted card and return to the previous accepted card.";
         if (card.preview_available) {
-            const nextSource = api.apiURL(`/longcaster/cards/preview?project=${encodeURIComponent(state.project)}&card=${encodeURIComponent(card.id)}`);
+            const previewQuery = new URLSearchParams({
+                project: state.project,
+                card: card.id,
+                version: card.preview_version || card.updated_at || "",
+            });
+            const nextSource = api.apiURL(`/longcaster/cards/preview?${previewQuery.toString()}`);
             if (video.dataset.source !== nextSource) { video.dataset.source = nextSource; video.src = nextSource; video.load(); }
         } else if (video.dataset.source) {
             video.pause(); video.removeAttribute("src"); video.dataset.source = ""; video.load();
@@ -821,21 +1052,50 @@ function createCardsWorkspace(node) {
         if (workspace.dirty) return save();
         return true;
     }
+    workspace.flush = flush;
 
-    async function load(project = widget(node, "project_name")?.value) {
+    function load(project = widget(node, "project_name")?.value) {
         const loadEpoch = ++workspace.loadEpoch;
-        try {
-            const body = await responseJson(await api.fetchApi(`/longcaster/cards/state?project=${encodeURIComponent(project || "")}`));
-            if (loadEpoch !== workspace.loadEpoch) return false;
-            updateState(body, !workspace.followActive); workspace.followActive = false;
-            projectSelect.value = body.project; setMessage(body.message || "Project loaded.");
-            return true;
-        } catch (error) {
-            if (loadEpoch === workspace.loadEpoch) setMessage(`Load failed: ${error.message}`, true);
-            return false;
-        }
+        workspace.requestedProject = project;
+        workspace.loading = (async () => {
+            try {
+                const body = await responseJson(await api.fetchApi(`/longcaster/cards/state?project=${encodeURIComponent(project || "")}`));
+                if (loadEpoch !== workspace.loadEpoch) return false;
+                updateState(body, !workspace.followActive); workspace.followActive = false;
+                projectSelect.value = body.project; setMessage(body.message || "Project loaded.");
+                return true;
+            } catch (error) {
+                if (loadEpoch === workspace.loadEpoch) {
+                    workspace.requestedProject = workspace.state?.project;
+                    if (workspace.state) {
+                        syncProjectNode(node, workspace.state);
+                        projectSelect.value = workspace.state.project;
+                    }
+                    setMessage(`Load failed: ${error.message}`, true);
+                }
+                return false;
+            } finally {
+                if (loadEpoch === workspace.loadEpoch) workspace.loading = null;
+            }
+        })();
+        return workspace.loading;
     }
     workspace.load = load;
+    workspace.refresh = async (project) => {
+        if (workspace.state?.project !== project || workspace.requestedProject !== project) return;
+        if (!await flush()) return;
+        if (workspace.state?.project === project && workspace.requestedProject === project) await load(project);
+    };
+    workspace.switchProject = async (project) => {
+        if (!await flush()) {
+            if (workspace.state) {
+                syncProjectNode(node, workspace.state);
+                projectSelect.value = workspace.state.project;
+            }
+            return false;
+        }
+        return load(project);
+    };
 
     async function loadProjects(preferredProject = null, loadSelected = true) {
         const projectListEpoch = ++workspace.projectListEpoch;
@@ -859,6 +1119,7 @@ function createCardsWorkspace(node) {
 
     async function createNewProject() {
         workspace.loadEpoch += 1;
+        workspace.loading = null;
         workspace.projectListEpoch += 1;
         try {
             const resolution = selectedNewResolution();
@@ -1000,6 +1261,7 @@ function createCardsWorkspace(node) {
     }
 
     async function runAction(action) {
+        if (workspace.loading && !await workspace.loading) return;
         if (!await flush()) return;
         const card = selectedCard();
         if (action === "accept" && card.draft_inputs_dirty) {
@@ -1007,14 +1269,7 @@ function createCardsWorkspace(node) {
             render();
             return;
         }
-        const projectWidget = widget(node, "project_name");
-        const promptWidget = widget(node, "prompt");
-        const durationWidget = widget(node, "duration_seconds");
-        const seedWidget = widget(node, "seed");
-        if (projectWidget) projectWidget.value = workspace.state.project;
-        if (promptWidget) promptWidget.value = card.assembled_prompt;
-        if (durationWidget) durationWidget.value = Number(card.requested_duration_seconds);
-        if (seedWidget) seedWidget.value = Number(card.seed);
+        syncProjectNode(node, workspace.state);
         workspace.followActive = action === "append";
         setMessage(`${action} queued…`); queueAction(node, action);
     }
@@ -1072,7 +1327,10 @@ function createCardsWorkspace(node) {
     };
     previousCard.onclick = async () => { const card = selectedCard(); const target = workspace.state.cards[card.timeline_index - 1]; if (target && await flush()) { workspace.selectedCardId = target.id; render(); } };
     nextCard.onclick = async () => { const card = selectedCard(); const target = workspace.state.cards[card.timeline_index + 1]; if (target && await flush()) { workspace.selectedCardId = target.id; render(); } };
-    generate.onclick = () => runAction("generate"); retry.onclick = () => runAction("retry"); accept.onclick = () => runAction("accept"); append.onclick = () => runAction("append");
+    generate.onclick = () => runAction("generate"); retry.onclick = () => runAction("retry"); accept.onclick = () => runAction("accept"); append.onclick = () => runAction("append"); unpublish.onclick = () => runAction("unpublish");
+    removeDraft.onclick = () => {
+        if (confirm("Remove this unaccepted draft card and return to the previous accepted card? Its draft render and preview will be discarded.")) runAction("remove_draft");
+    };
     newProject.onclick = () => { newPanel.hidden = !newPanel.hidden; if (!newPanel.hidden) newName.focus(); };
     cancelCreate.onclick = () => { newPanel.hidden = true; };
     createProject.onclick = () => createNewProject();
@@ -1081,8 +1339,8 @@ function createCardsWorkspace(node) {
     refreshIdentities.onclick = async () => { if (await flush()) await load(workspace.state.project); };
     refreshReferences.onclick = async () => { if (await flush()) { await load(workspace.state.project); renderReferences(selectedCard()); } };
     editReferences.onclick = () => focusReferenceGraph();
-    projectSelect.onchange = async () => { if (!await flush()) return; const projectWidget = widget(node, "project_name"); if (projectWidget) projectWidget.value = projectSelect.value; workspace.selectedCardId = null; await load(projectSelect.value); };
-    refresh.onclick = () => loadProjects(); close.onclick = async () => { if (await flush()) root.hidden = true; };
+    projectSelect.onchange = () => workspace.switchProject(projectSelect.value);
+    refresh.onclick = async () => { if (await flush()) await loadProjects(); }; close.onclick = async () => { if (await flush()) root.hidden = true; };
     window.addEventListener("beforeunload", (event) => { if (workspace.dirty) { event.preventDefault(); event.returnValue = ""; } });
     loadProjects();
 }
@@ -1132,12 +1390,14 @@ app.registerExtension({
                 originalExecuted?.apply(this, arguments);
                 const state = message?.longcaster_identity?.[0];
                 if (!state) return;
+                if (state.project !== widget(this, "project_name")?.value) return;
                 const action = widget(this, "action");
                 if (action) action.value = "inspect";
                 updateIdentityPanel(this, state);
                 for (const projectNode of this.graph?._nodes || []) {
-                    if ((projectNode.comfyClass === "LongCasterProject" || projectNode.type === "LongCasterProject") && projectNode.longcasterCardsWorkspace) {
-                        projectNode.longcasterCardsWorkspace.load(state.project);
+                    const workspace = projectNode.longcasterCardsWorkspace;
+                    if (workspace?.state?.project === state.project && (!workspace.requestedProject || workspace.requestedProject === state.project)) {
+                        workspace.refresh(state.project);
                     }
                 }
             };
@@ -1156,6 +1416,20 @@ app.registerExtension({
             };
             return;
         }
+        if (nodeData.name === "LongCasterRegisterPreview") {
+            const originalExecuted = nodeType.prototype.onExecuted;
+            nodeType.prototype.onExecuted = function (message) {
+                originalExecuted?.apply(this, arguments);
+                const preview = message?.longcaster_preview?.[0];
+                if (!preview) return;
+                const authority = projectAuthority(this);
+                const workspace = authority?.longcasterCardsWorkspace;
+                if (workspace?.state?.project !== preview.project) return;
+                if (workspace.requestedProject && workspace.requestedProject !== preview.project) return;
+                workspace.refresh(preview.project);
+            };
+            return;
+        }
         if (nodeData.name !== "LongCasterProject") return;
 
         const originalCreated = nodeType.prototype.onNodeCreated;
@@ -1163,6 +1437,15 @@ app.registerExtension({
             const result = originalCreated?.apply(this, arguments);
             const action = widget(this, "action");
             if (action) action.value = "resume";
+            const project = widget(this, "project_name");
+            if (project) {
+                const originalCallback = project.callback;
+                project.callback = (...args) => {
+                    originalCallback?.apply(project, args);
+                    this.longcasterCardsWorkspace?.switchProject(project.value);
+                };
+            }
+            this.addWidget("button", "Open Cards Interface", null, () => createCardsWorkspace(this));
             this.addWidget("button", "Resume Project", null, () => queueAction(this, "resume"));
             this.addWidget("button", "Stop Render / Unlock", null, () => stopAndUnlock(this));
             this.addWidget("button", "Generate Draft", null, () => queueAction(this, "generate"));
@@ -1170,7 +1453,6 @@ app.registerExtension({
             this.addWidget("button", "Accept Draft", null, () => queueAction(this, "accept"));
             this.addWidget("button", "Unpublish Latest Card", null, () => queueAction(this, "unpublish"));
             this.addWidget("button", "Append Card", null, () => queueAction(this, "append"));
-            this.addWidget("button", "Open Cards Interface", null, () => createCardsWorkspace(this));
             const computed = this.computeSize?.();
             this.setSize([Math.max(this.size[0], 360), Math.max(this.size[1], computed?.[1] ?? this.size[1])]);
             return result;
@@ -1181,21 +1463,14 @@ app.registerExtension({
             originalExecuted?.apply(this, arguments);
             const state = message?.longcaster_state?.[0];
             if (!state) return;
-            this.longcasterState = state;
+            const workspace = this.longcasterCardsWorkspace;
+            if (state.project !== widget(this, "project_name")?.value) return;
+            if (workspace?.requestedProject && workspace.requestedProject !== state.project) return;
+            syncProjectNode(this, state);
             const action = widget(this, "action");
             if (action) action.value = "resume";
-            const card = state.active_card;
-            if (card) {
-                const prompt = widget(this, "prompt");
-                const duration = widget(this, "duration_seconds");
-                const seed = widget(this, "seed");
-                if (prompt) prompt.value = card.prompt ?? prompt.value;
-                if (duration) duration.value = card.requested_duration_seconds ?? duration.value;
-                if (seed) seed.value = card.seed ?? seed.value;
-            }
-            this.title = `MiniMax H3 LongCaster · ${card?.status ?? "UNKNOWN"}`;
-            if (this.longcasterCardsWorkspace && !this.longcasterCardsWorkspace.root.hidden) {
-                this.longcasterCardsWorkspace.load(state.project);
+            if (workspace) {
+                workspace.refresh(state.project);
             }
             this.graph?.setDirtyCanvas(true, true);
         };

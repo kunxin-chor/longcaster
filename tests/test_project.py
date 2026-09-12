@@ -167,6 +167,17 @@ class ProjectStoreTests(unittest.TestCase):
                 preview_sha256=sha256_file(preview),
                 source_artifact_sha256="0" * 64,
             )
+        pending, _ = self.store.begin_generation(
+            action="retry", prompt="opening", duration_seconds=5.0, seed=11,
+            recipe={"sigmas": [12, 0]}, fingerprint=generation_fingerprint({"retry": 1}),
+        )
+        self.store.fail_generation(pending["pending_operation"]["id"], "retry failed")
+        self.assertEqual(
+            self.store.active_card(self.store.load())["preview"]["asset_sha256"],
+            recorded["asset_sha256"],
+        )
+        replacement = self._draft(action="retry", body=b"replacement mmh3")
+        self.assertIsNone(self.store.active_card(replacement)["preview"])
 
     def test_schema_one_project_migrates_with_empty_anchor_lists(self):
         document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))

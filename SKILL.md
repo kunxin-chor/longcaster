@@ -7,6 +7,25 @@ description: Navigate and modify the ComfyUI-MiniMax-H3-LongCaster repository, i
 
 Use this file to find the source of truth for a LongCaster task before editing. Read only the files relevant to the change, then check adjacent tests and user documentation.
 
+## Absolute repository write boundary
+
+Treat the repository directory containing this `SKILL.md` as the absolute boundary for every filesystem mutation.
+
+- Never create, modify, overwrite, delete, move, rename, or copy files or directories outside this repository.
+- Do not request elevated permissions, create helper scripts, or run commands that would mutate ComfyUI user workflows, output folders, sibling custom nodes, dependency directories, or any other external location.
+- External files may be inspected read-only when needed to diagnose a repository issue. If an external change would be useful, describe the exact manual change to the user without performing it.
+- Before every filesystem mutation, ensure every target is inside this repository. Keep temporary files and generated test artifacts inside the repository as well, and remove them when finished.
+
+## Workflow inspection requires an exact user-supplied path
+
+Do not discover or inspect workflow files unless the user supplies the exact path to each workflow file.
+
+- Never scan, search, enumerate, glob, or list directories to find workflows.
+- Never infer a workflow path from a name, log, screenshot, active project, recent file, default directory, or nearby workflow.
+- Do not open, parse, summarize, validate, compare, or modify a workflow identified only by a general description such as "the default workflow" or "the example workflows."
+- Treat one supplied path as authorization to inspect only that exact file. Do not inspect sibling workflows or similarly named copies.
+- If work depends on a workflow and its exact path was not supplied, stop that part of the task and ask the user for the exact file path. Continue only work that does not require workflow inspection.
+
 ## Establish the current behavior
 
 Use this precedence when descriptions disagree:

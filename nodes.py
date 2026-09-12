@@ -56,6 +56,19 @@ def _projects_root() -> Path:
     return Path(folder_paths.get_output_directory()) / "longcaster_projects"
 
 
+def _project_from_state(project_name: str, project_state: str | None) -> str:
+    if not project_state:
+        return project_name
+    try:
+        state = json.loads(project_state)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ProjectError("project_state is not valid LongCaster JSON") from exc
+    authoritative_name = state.get("project") if isinstance(state, dict) else None
+    if not isinstance(authoritative_name, str) or not authoritative_name:
+        raise ProjectError("project_state does not identify a LongCaster project")
+    return authoritative_name
+
+
 def _model_snapshot(model: Any) -> dict[str, Any]:
     model_object = getattr(model, "model", None)
     options = getattr(model, "model_options", {})
@@ -76,6 +89,8 @@ def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict
         "project": manifest["project_name"],
         "revision": manifest["revision"],
         "generation_mode": manifest["generation_mode"],
+        "width": manifest["width"],
+        "height": manifest["height"],
         "active_card": card,
         "card_count": len(manifest["cards"]),
         "active_identity_anchor": identity,
@@ -110,7 +125,7 @@ class LongCasterProject:
                 "video_vae": ("VAE",),
                 "audio_vae": ("VAE",),
                 "project_name": ("STRING", {"default": "longcaster_project"}),
-                "action": (["resume", "cancel", "generate", "retry", "accept", "unpublish", "append"], {"default": "resume"}),
+                "action": (["resume", "cancel", "generate", "retry", "accept", "unpublish", "remove_draft", "append"], {"default": "resume"}),
                 "generation_mode": (["ref2va", "t2va"], {"default": "ref2va"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": True}),
                 "duration_seconds": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 120.0, "step": 0.1}),
@@ -205,6 +220,9 @@ class LongCasterProject:
         else:
             manifest = store.load()
 
+        # Linked resolution inputs configure new projects; saved projects own their canvas.
+        width, height = int(manifest["width"]), int(manifest["height"])
+
         if action == "cancel":
             manifest, cancelled = store.cancel_pending()
             message = "Render stopped and project unlocked." if cancelled else "Project was already unlocked."
@@ -214,11 +232,6 @@ class LongCasterProject:
             raise ProjectError(
                 f"project mode is fixed at {manifest['generation_mode']}; the node requested {generation_mode}"
             )
-        if int(manifest["width"]) != int(width) or int(manifest["height"]) != int(height):
-            raise ProjectError(
-                f"project canvas is fixed at {manifest['width']}x{manifest['height']}"
-            )
-
         if action == "resume":
             return self._result(None, None, _status(manifest, store, "Project resumed."), store)
 
@@ -253,6 +266,15 @@ class LongCasterProject:
                     store,
                     "Latest accepted card reopened as a draft; its prior immutable master was retained in publication history.",
                 ),
+                store,
+            )
+
+        if action == "remove_draft":
+            manifest = store.remove_draft_tail()
+            return self._result(
+                None,
+                None,
+                _status(manifest, store, "Draft card removed; previous accepted card is active."),
                 store,
             )
 
@@ -599,6 +621,13 @@ class LongCasterIdentityAnchor:
                     "IMAGE",
                     {"tooltip": "Optional single frame from VHS or another image selector. Avoids decoding the MMH3 source."},
                 ),
+                "project_state": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "tooltip": "Connect LongCaster Project project_state. It overrides project_name.",
+                    },
+                ),
             },
         }
 
@@ -619,9 +648,10 @@ class LongCasterIdentityAnchor:
     def execute(
         self, project_name, action, source_card, frame_index,
         subject_id, label, command_id, identity_scope, custom_identity_instruction,
-        video_vae=None, selected_image=None,
+        video_vae=None, selected_image=None, project_state=None,
     ):
         del command_id
+        project_name = _project_from_state(project_name, project_state)
         store = ProjectStore(_projects_root(), project_name)
         manifest = store.load()
         subject = str(subject_id).strip()
@@ -822,7 +852,17 @@ class LongCasterRegisterPreview:
             source_artifact_sha256=artifact_hash,
         )
         LOGGER.info("LongCaster project preview registered: card_id=%s path=%s", card_id, destination)
-        return str(destination), (True, [str(destination)])
+        preview_state = {
+            "project": str(project_name),
+            "card_id": str(card_id),
+            "source_artifact_sha256": str(artifact_hash),
+            "preview_sha256": preview_hash,
+            "path": str(destination),
+        }
+        return {
+            "ui": {"longcaster_preview": [preview_state]},
+            "result": (str(destination), (True, [str(destination)])),
+        }
 
 
 class LongCasterDecode:
@@ -898,6 +938,15 @@ class LongCasterTimelineExport:
                 "preset": (["p1", "p2", "p3", "p4", "p5", "p6", "p7"], {"default": "p4"}),
                 "cq": ("INT", {"default": 17, "min": 0, "max": 51, "step": 1}),
                 "audio_bitrate": (["128k", "192k", "256k", "320k"], {"default": "192k"}),
+            },
+            "optional": {
+                "project_state": (
+                    "STRING",
+                    {
+                        "forceInput": True,
+                        "tooltip": "Connect LongCaster Project project_state. It overrides project_name.",
+                    },
+                ),
             }
         }
 
@@ -926,7 +975,9 @@ class LongCasterTimelineExport:
         preset,
         cq,
         audio_bitrate,
+        project_state=None,
     ):
+        project_name = _project_from_state(project_name, project_state)
         if not enabled:
             return {"ui": {"longcaster_timeline": [{"message": "Timeline export is disabled."}]},
                     "result": ("", 0, 0)}

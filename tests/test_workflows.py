@@ -11,6 +11,8 @@ WORKFLOW_NAMES = (
     "longcaster_hybrid_ref2va.json",
     "longcaster_standard_t2va.json",
 )
+REFERENCE_WORKFLOW_NAMES = WORKFLOW_NAMES[:3]
+PDD_REFERENCE_WORKFLOW_NAMES = WORKFLOW_NAMES[:2]
 
 
 class WorkflowSerializationTests(unittest.TestCase):
@@ -129,26 +131,46 @@ class WorkflowSerializationTests(unittest.TestCase):
         self.assertEqual(sigma_shift["type"], "MiniMaxH3SigmaShift")
         self.assertEqual(nodes[links[sigma_shift["inputs"][0]["link"]][1]]["type"], "MiniMaxH3RefPatchLoader")
 
-    def test_pdd_workflow_includes_disabled_timeline_export(self):
-        workflow = self._load("longcaster_pdd_ref2va.json")
-        exporter = next(item for item in workflow["nodes"] if item["type"] == "LongCasterTimelineExport")
-        self.assertEqual(exporter["widgets_values"], [
-            "episode_01", False, "video/longcaster_joined", False, "p4", 17, "192k"
-        ])
-        links = {item[0]: item for item in workflow["links"]}
-        self.assertEqual(links[exporter["inputs"][0]["link"]][1], 3)
-        self.assertEqual(links[exporter["inputs"][1]["link"]][1], 4)
+    def test_pdd_reference_workflows_include_disabled_timeline_stitcher(self):
+        for name in PDD_REFERENCE_WORKFLOW_NAMES:
+            with self.subTest(name=name):
+                workflow = self._load(name)
+                exporter = next(item for item in workflow["nodes"] if item["type"] == "LongCasterTimelineExport")
+                self.assertEqual(exporter["widgets_values"][1:], [
+                    False, "video/longcaster_joined", False, "p4", 17, "192k"
+                ])
+                links = {item[0]: item for item in workflow["links"]}
+                self.assertEqual(links[exporter["inputs"][0]["link"]][1], 3)
+                self.assertEqual(links[exporter["inputs"][1]["link"]][1], 4)
 
-    def test_pdd_workflow_includes_identity_anchor_selector(self):
-        workflow = self._load("longcaster_pdd_ref2va.json")
-        selector = next(item for item in workflow["nodes"] if item["type"] == "LongCasterIdentityAnchor")
-        self.assertEqual(selector["widgets_values"][:6], [
-            "episode_01", "inspect", "1", 0, "<Subject 1>", "identity checkpoint"
-        ])
-        self.assertEqual(selector["widgets_values"][7:], ["face_only", ""])
-        links = {item[0]: item for item in workflow["links"]}
-        self.assertEqual(links[selector["inputs"][0]["link"]][1], 3)
-        self.assertEqual(selector["outputs"][2]["name"], "selected_frame")
+    def test_reference_workflows_connect_project_state_to_every_project_dependent_node(self):
+        for name in REFERENCE_WORKFLOW_NAMES:
+            with self.subTest(name=name):
+                workflow = self._load(name)
+                nodes = {item["id"]: item for item in workflow["nodes"]}
+                links = {item[0]: item for item in workflow["links"]}
+                project = next(item for item in workflow["nodes"] if item["type"] == "LongCasterProject")
+                state_output = next(item for item in project["outputs"] if item["name"] == "project_state")
+                for node_type in ("LongCasterIdentityAnchor", "LongCasterTimelineExport"):
+                    dependent = next(item for item in workflow["nodes"] if item["type"] == node_type)
+                    state_input = next(item for item in dependent["inputs"] if item["name"] == "project_state")
+                    link = links[state_input["link"]]
+                    self.assertEqual(nodes[link[1]]["type"], "LongCasterProject")
+                    self.assertEqual(link[2], 2)
+                    self.assertIn(state_input["link"], state_output["links"])
+
+    def test_reference_workflows_include_identity_anchor_selector(self):
+        for name in REFERENCE_WORKFLOW_NAMES:
+            with self.subTest(name=name):
+                workflow = self._load(name)
+                selector = next(item for item in workflow["nodes"] if item["type"] == "LongCasterIdentityAnchor")
+                self.assertEqual(selector["widgets_values"][1:6], [
+                    "inspect", "1", 0, "<Subject 1>", "identity checkpoint"
+                ])
+                self.assertEqual(selector["widgets_values"][7:], ["face_only", ""])
+                links = {item[0]: item for item in workflow["links"]}
+                self.assertEqual(links[selector["inputs"][0]["link"]][1], 3)
+                self.assertEqual(selector["outputs"][2]["name"], "selected_frame")
 
     def test_web_extension_exposes_stage_2c_cards_workspace(self):
         source = WEB_EXTENSION.read_text(encoding="utf-8")
@@ -170,6 +192,10 @@ class WorkflowSerializationTests(unittest.TestCase):
             "Megapixels (MP)", "PROJECT_RESOLUTION_MULTIPLE = 32",
             "loadEpoch", "loadProjects(body.project, false)",
             "Paste Full Prompt", "import_prompt: pasted",
+            "Stop Generation / Unlock", "execution_start", "execution_success",
+            "execution_interrupted", "execution_error", "longcaster_log",
+            "Show Execution Log", "Hide Execution Log", "longcaster.executionLogExpanded",
+            "LongCasterRegisterPreview", "longcaster_preview", "preview_version",
         ):
             self.assertIn(control, source)
 

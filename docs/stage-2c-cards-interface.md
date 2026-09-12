@@ -124,6 +124,8 @@ The expanded layout contains:
 - side-by-side full-prompt and selected-section views with synchronized section positioning;
 - explicit automatic conversion of complete canonical `section_name:` flat prompts.
 - full-prompt paste/import for editable cards, with complete or partial canonical headings assigned to their sections and unlabelled text retained in `detailed_description`.
+- a persistent execution panel below the card workspace showing the current node/stage, live sampling progress, bounded LongCaster log output, and execution errors or tracebacks, with a compact always-visible status row and a toggleable fixed-height scrolling log;
+- a **Stop Generation / Unlock** header action that interrupts ComfyUI and queues the existing cancel operation so project locks are reconciled without closing Studio.
 
 Edits autosave through revision-checked API calls after a short debounce and flush before generation. A dirty indicator remains visible until acknowledged. Closing, navigating, or queueing while a save failed produces an explicit warning. Keyboard focus and tab order make all six sections reachable without closing the workspace.
 

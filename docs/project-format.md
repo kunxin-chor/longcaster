@@ -89,6 +89,7 @@ Each `publication_history` record has a stable `publication_id`, the old `artifa
 - Resume completes a recoverable acceptance journal when the published master hash matches.
 - Accepted filenames are never reused or overwritten.
 - Unpublish is limited to the active accepted tail with no descendants. It copies that master to a retryable draft, archives the publication metadata, clears version-specific anchors and previews from the live card, and reserves a new artifact number for the next acceptance.
+- Remove Draft is limited to the active, never-published tail after an accepted predecessor. It commits the shorter timeline first, restores that predecessor as active, then best-effort deletes the removed card's draft, preview, and cached anchor files. It never removes an accepted master or publication-history record.
 
 Each accepted MMH3 contains its joint H3 sampler-output latent and LongCaster card metadata. Reference media stays in the separately connected reference MMH3 packet.
 

@@ -1,6 +1,6 @@
 {
   "last_node_id": 23,
-  "last_link_id": 25,
+  "last_link_id": 27,
   "nodes": [
     {
       "id": 1,
@@ -649,7 +649,9 @@
           "name": "project_state",
           "type": "STRING",
           "links": [
-            23
+            23,
+            26,
+            27
           ],
           "slot_index": 2
         },
@@ -845,14 +847,16 @@
       "id": 20,
       "type": "LongCasterTimelineExport",
       "pos": [
-        2040,
-        520
+        1640,
+        480
       ],
       "size": [
         380,
         270
       ],
       "flags": {},
+      "color": "#432",
+      "bgcolor": "#a54",
       "order": 15,
       "mode": 0,
       "inputs": [
@@ -865,6 +869,11 @@
           "name": "audio_vae",
           "type": "VAE",
           "link": 20
+        },
+        {
+          "name": "project_state",
+          "type": "STRING",
+          "link": 26
         }
       ],
       "outputs": [
@@ -920,6 +929,11 @@
           "name": "video_vae",
           "type": "VAE",
           "link": 21
+        },
+        {
+          "name": "project_state",
+          "type": "STRING",
+          "link": 27
         }
       ],
       "outputs": [
@@ -1219,6 +1233,22 @@
       11,
       7,
       "INT"
+    ],
+    [
+      26,
+      11,
+      2,
+      20,
+      2,
+      "STRING"
+    ],
+    [
+      27,
+      11,
+      2,
+      21,
+      1,
+      "STRING"
     ]
   ],
   "groups": [
