@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from longcaster.fingerprint import generation_fingerprint
 from longcaster.project import ProjectError, ProjectStore, sha256_file
+from longcaster.prompt_sections import assemble_prompt, edit_sections, empty_prompt_sections
 
 
 class ProjectStoreTests(unittest.TestCase):
@@ -63,6 +64,7 @@ class ProjectStoreTests(unittest.TestCase):
         current = self.store.active_card(manifest)
         self.assertEqual(current["status"], "EMPTY")
         self.assertEqual(current["generation_parent_id"], accepted["id"])
+        self.assertEqual(current["timeline_predecessor_id"], accepted["id"])
 
     def test_unpublish_tail_preserves_master_and_allows_retry(self):
         self._draft(body=b"published version")
@@ -82,6 +84,9 @@ class ProjectStoreTests(unittest.TestCase):
         publication = reopened["publication_history"][0]
         self.assertEqual(publication["artifact_number"], 1)
         self.assertEqual(publication["master_path"], "clips/card_0001.mmh3")
+        self.assertEqual(publication["prompt_hash"], accepted["prompt_hash"])
+        self.assertEqual(publication["generation_fingerprint"], accepted["generation_fingerprint"])
+        self.assertEqual(publication["seed"], accepted["seed"])
         self.assertEqual(self.store.validate_artifacts(manifest), [])
         copied_draft = self.store.absolute_path(reopened["draft_path"])
         self.assertTrue(copied_draft.is_file())
@@ -158,7 +163,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -183,7 +188,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -194,7 +199,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -276,7 +281,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 5)
+        self.assertEqual(migrated["schema_version"], 6)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -460,6 +465,151 @@ class ProjectStoreTests(unittest.TestCase):
         sixth = self._draft(body=b"card-6")
         self.assertEqual(self.store.active_card(sixth)["artifact_number"], 6)
         self.assertEqual(self.store.active_card(sixth)["status"], "DRAFT")
+
+    def test_schema_five_flat_prompt_migrates_without_rewriting_it(self):
+        document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 5
+        original = document["cards"][0]["prompt"]
+        for field in (
+            "timeline_predecessor_id", "prompt_sections", "prompt_format", "assembled_prompt",
+            "prompt_hash", "continuation_strategy", "reference_set", "accepted_publication_id",
+        ):
+            document["cards"][0].pop(field, None)
+        self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+        migrated = self.store.load()
+        card = self.store.active_card(migrated)
+        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(card["prompt_format"], "legacy_flat")
+        self.assertEqual(card["prompt"], original)
+        self.assertEqual(card["assembled_prompt"], original)
+        self.assertIsNone(card["timeline_predecessor_id"])
+
+    def test_new_project_with_empty_prompt_starts_structured(self):
+        store = ProjectStore(self.root, "empty_prompt_project")
+        manifest = store.create(
+            prompt="", duration_seconds=5, seed=1, width=1344, height=768,
+            generation_mode="ref2va",
+        )
+        card = store.active_card(manifest)
+        self.assertEqual(card["prompt_format"], "structured_v1")
+        self.assertEqual(card["prompt"], assemble_prompt(empty_prompt_sections()))
+
+    def test_structured_card_autosave_tracks_revision_and_copy_provenance(self):
+        sections = edit_sections(empty_prompt_sections(), {
+            "subject_definitions": "Subject A",
+            "summary": "Opening summary",
+            "overall_soundscape": "Room tone",
+        })
+        assembled = assemble_prompt(sections)
+        self.store.update_card_editor(
+            card_id=self.manifest["active_card_id"],
+            expected_revision=self.manifest["revision"],
+            section_changes={name: record["text"] for name, record in sections.items()},
+            convert_legacy=True,
+        )
+        manifest = self.store.load()
+        first = self.store.active_card(manifest)
+        self.assertEqual(first["prompt_format"], "structured_v1")
+        self.assertEqual(first["prompt"], assembled)
+        self._draft()
+        manifest = self.store.accept()
+        accepted = self.store.active_card(manifest)
+        self.assertIsNotNone(accepted["accepted_publication_id"])
+        manifest = self.store.append(prompt="", duration_seconds=6, seed=22)
+        second = self.store.active_card(manifest)
+        self.assertEqual(second["prompt_sections"]["subject_definitions"]["text"], "Subject A")
+        self.assertEqual(second["prompt_sections"]["summary"]["text"], "")
+        self.assertEqual(
+            second["prompt_sections"]["overall_soundscape"]["provenance"]["source_type"],
+            "copied_previous",
+        )
+
+        with self.assertRaisesRegex(ProjectError, "stale project revision"):
+            self.store.update_card_editor(
+                card_id=second["id"], expected_revision=manifest["revision"] - 1,
+                section_changes={"summary": "stale"},
+            )
+        manifest = self.store.update_card_editor(
+            card_id=second["id"], expected_revision=manifest["revision"],
+            section_changes={"summary": "Card two"}, duration_seconds=7, seed=23,
+        )
+        updated = self.store.active_card(manifest)
+        self.assertEqual(updated["requested_duration_seconds"], 7)
+        self.assertEqual(updated["seed"], 23)
+
+        manifest = self.store.copy_card_sections(
+            target_card_id=second["id"], source_card_id=accepted["id"],
+            names=["summary"], expected_revision=manifest["revision"],
+        )
+        copied = self.store.active_card(manifest)["prompt_sections"]["summary"]
+        self.assertEqual(copied["text"], "Opening summary")
+        self.assertEqual(copied["provenance"]["source_type"], "copied_previous")
+        self.assertEqual(copied["provenance"]["source_card_id"], accepted["id"])
+        manifest = self.store.update_card_editor(
+            card_id=second["id"], expected_revision=manifest["revision"],
+            clear_sections=["summary"],
+        )
+        cleared = self.store.active_card(manifest)["prompt_sections"]["summary"]
+        self.assertEqual(cleared["text"], "")
+        self.assertEqual(cleared["provenance"]["source_type"], "manual")
+        self.assertIsNone(cleared["provenance"]["source_card_id"])
+
+    def test_accepted_card_editor_is_read_only(self):
+        self._draft()
+        manifest = self.store.accept()
+        card = self.store.active_card(manifest)
+        with self.assertRaisesRegex(ProjectError, "read-only"):
+            self.store.update_card_editor(
+                card_id=card["id"], expected_revision=manifest["revision"],
+                section_changes={"summary": "no"},
+            )
+
+    def test_editing_generated_draft_requires_retry_before_accept(self):
+        manifest = self.store.update_card_editor(
+            card_id=self.manifest["active_card_id"], expected_revision=self.manifest["revision"],
+            section_changes={"summary": "First version"}, convert_legacy=True,
+        )
+        manifest = self._draft()
+        card = self.store.active_card(manifest)
+        self.assertFalse(card["draft_inputs_dirty"])
+        manifest = self.store.update_card_editor(
+            card_id=card["id"], expected_revision=manifest["revision"],
+            section_changes={"summary": "Changed after render"},
+        )
+        self.assertTrue(self.store.active_card(manifest)["draft_inputs_dirty"])
+        with self.assertRaisesRegex(ProjectError, "Retry Draft"):
+            self.store.accept()
+        manifest = self._draft(action="retry", body=b"matching replacement")
+        self.assertFalse(self.store.active_card(manifest)["draft_inputs_dirty"])
+        self.assertEqual(self.store.active_card(self.store.accept())["status"], "ACCEPTED")
+
+    def test_failed_initial_generation_has_failed_status_but_failed_retry_keeps_draft(self):
+        pending, _ = self.store.begin_generation(
+            action="generate", prompt="opening", duration_seconds=5, seed=11,
+            recipe={}, fingerprint=generation_fingerprint({}),
+        )
+        self.store.fail_generation(pending["pending_operation"]["id"], "GPU failed")
+        failed = self.store.load()
+        self.assertEqual(self.store.active_card(failed)["status"], "FAILED")
+        pending, _ = self.store.begin_generation(
+            action="generate", prompt="opening", duration_seconds=5, seed=11,
+            recipe={}, fingerprint=generation_fingerprint({"retry": 1}),
+        )
+        card = self.store.active_card(pending)
+        destination = self.store.draft_destination(card)
+        destination.write_bytes(b"working draft")
+        manifest = self.store.finish_generation(
+            operation_id=pending["pending_operation"]["id"], draft_path=destination,
+            artifact_sha256=sha256_file(destination), context_frame_count=0,
+            generated_frame_count=124, actual_new_frame_count=124,
+            actual_duration_seconds=124 / 24,
+        )
+        pending, _ = self.store.begin_generation(
+            action="retry", prompt="opening", duration_seconds=5, seed=11,
+            recipe={}, fingerprint=generation_fingerprint({"retry": 2}),
+        )
+        self.store.fail_generation(pending["pending_operation"]["id"], "retry failed")
+        self.assertEqual(self.store.active_card(self.store.load())["status"], "DRAFT")
 
 
 if __name__ == "__main__":

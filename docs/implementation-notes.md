@@ -16,6 +16,8 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 - Stage 2A automatic current-state anchors: lossless final-frame PNG extraction at acceptance, UUID-backed card metadata, native H3 `MiniMaxH3AddGuide` conditioning at the handover boundary, and optional minimal prompt reinforcement.
 - Stage 2B manual identity anchors: preview-relative frame selection from immutable accepted cards, project-level subject binding, lossless historical PNG persistence, native H3 `minimax_refs` conditioning without a spatial keyframe, and persisted prompt scopes for limiting attribute inheritance.
 - Visual Stage 2B picker: server-side project/card discovery, an embedded project-preview player with playhead-to-frame synchronization, exact MMH3 frame confirmation, direct enable/disable/clear controls, and optional one-frame `IMAGE` input interoperability.
+- Stage 2C Cards workspace: all-card inspection, registered preview playback, state-aware controller actions, six-section editing, section-level copy/clear, provenance display, deterministic assembled-prompt preview, debounced autosave, and revision-conflict protection.
+- Schema 6 structured prompt persistence: explicit timeline predecessors, stable accepted-publication IDs, prompt sections/provenance/hash, continuation/reference summaries, safe flat-prompt migration, inherited new-card defaults, and a `FAILED` state that never replaces a usable retry draft.
 - Project-owned preview registration: reuse the existing VHS encode, copy it under the card UUID in `previews/`, and bind it to the exact draft/master artifact hash without changing the MMH3 master.
 - Preview backfill for older projects: decode the visible accepted-card frames once and write a silent NVENC navigation MP4; the resulting identity anchor is still extracted separately from the immutable MMH3 source.
 - Persistent UUID-based card state, ancestry, fingerprints, atomic manifests, locks, journals, restart reconciliation, and artifact diagnostics.
@@ -38,6 +40,7 @@ The installed PDD implementation states that PDD on a hybrid-merged trunk is unt
 ## Verified
 
 - Non-GPU tests cover serialization, UUID stability, legal and illegal transitions, path safety, retry preservation, draft promotion, missing/corrupt artifact reporting, interruption recovery, atomic-manifest residue, fingerprints, duration alignment, sigma validation, timeline ordering, continuation trimming, schema migration, anchor metadata/integrity, handover alignment, and prompt reinforcement.
+- Stage 2C non-GPU tests cover exact six-section parsing/assembly, Unicode and whitespace preservation, prompt hashes, inheritance and provenance, schema 1–5 migration, revision conflicts, accepted-card immutability, failed-generation state, and preservation of a usable draft after a failed Retry. The web extension also passes JavaScript syntax validation.
 - Custom-node registration imports successfully in the installed ComfyUI source.
 - An embedded-Python runtime smoke composes existing `minimax_refs` with a frame-38 native `minimax_keyframes` guide and writes the UUID-backed PNG anchor.
 - The MMH3 backend smoke passed under ComfyUI's embedded Python using current MMH3 source: Card 1 save, process restart, full archive load, 39-frame direct joint AV handover, and Card 2 save.
@@ -57,8 +60,8 @@ Automated checks do not measure whether the model obeys the visual state strongl
 
 - Project mode and resolution cannot change after creation.
 - REF2VA resume requires the reference packet to be connected again before generating another card.
-- The MVP exposes one active linear tail in the UI even though ancestry is stored separately.
-- Unpublish currently applies only to the latest accepted tail. The publication-history model is intended to support a future all-cards interface and explicit descendant invalidation when editing a middle card.
+- The Cards workspace can inspect every card, but generation and editing still target one active linear tail even though ancestry is stored separately.
+- Unpublish currently applies only to the latest accepted tail. The publication-history model is intended to support future per-card versioning controls and explicit descendant invalidation when editing a middle card.
 - Preview context trimming uses the model's 24 fps timing to trim decoded audio samples.
 - Timeline export requires an NVENC-capable FFmpeg and NVIDIA driver and exports at the model's fixed 24 fps.
 - Model identity is recorded as a safe patch/model summary because Comfy `MODEL` patchers do not expose a universal immutable checkpoint identity.

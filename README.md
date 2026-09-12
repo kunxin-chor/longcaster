@@ -199,6 +199,18 @@ When `reinforce_state_prompt=true`, the identity-scope instruction is inserted a
 
 For the face-reappearance test, select a clear frontal frame from an early accepted card, generate one or more cards where the face is hidden, then generate the turn-back card twice with the same prompt and seed. First set `use_identity_anchor=false`; Retry with it restored to `true`. Compare facial geometry while confirming clothing and props still follow the immediate parent's current-state anchor and motion still follows its MMH3 latent prefix.
 
+## Stage 2C Cards interface
+
+Click **Open Cards Interface** on the **MiniMax H3 LongCaster** project node to open the full-size project workspace. It lists every card and its status, registered preview, ancestry, anchors, reference summary, prompt hash, duration, and seed. Older accepted cards are available as read-only inspection and section-copy sources; generation actions remain attached to the active tail card.
+
+Newly appended cards use the normal six H3 sections: `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`. Subject definitions, retention analysis, soundscape, and non-diegetic music inherit from the previous card by default. Summary and detailed description start empty. Each section records whether it was written manually, copied from the predecessor, copied from another card, or modified after copying.
+
+Edits autosave through the project lock and revision counter. The workspace flushes pending edits before Generate or Retry, assembles the six XML-style sections deterministically, updates the existing node inputs, and queues the existing graph. This does not bypass the patched MODEL, external SIGMAS/PDD, reference packet, direct continuation, or anchor paths.
+
+Editing a prompt, duration, or seed after a draft is generated marks its inputs dirty. **Accept Draft** stays disabled until **Retry Draft** succeeds, preventing edited metadata from being attached to an older rendered artifact.
+
+Projects migrated from older schemas keep ambiguous flat prompts exactly unchanged. An editable legacy card offers an explicit **Convert into Detailed Description** action; migration itself never silently wraps or rewrites the text. Prompts already containing one ordered instance of all six canonical tags migrate automatically.
+
 Projects are stored under:
 
 ```text
@@ -254,4 +266,4 @@ See [project format](docs/project-format.md), [implementation notes](docs/implem
 
 ## MVP boundaries
 
-The controller supports one linear active tail, one generation mode per project, and the automatic final-frame current-state anchor. Branching, card-mode switching, user-selected guides, re-encoded history, manual/historical anchor selection, CLSS, additional anti-drift methods, latent upscale, bridge retakes, prompt composition, and custom decoder controls remain deferred. Reference resources remain in their own MMH3 packet and must be reconnected for future REF2VA generations after restart.
+The controller supports one linear active tail, one generation mode per project, the automatic final-frame current-state anchor, one active historical identity anchor, and deterministic six-section prompt composition. Branching, card-mode switching, additional user-selected guides, re-encoded history, CLSS, additional anti-drift methods, latent upscale, bridge retakes, automatic prompt writing/rewriting, and custom decoder controls remain deferred. Reference resources remain in their own MMH3 packet and must be reconnected for future REF2VA generations after restart.

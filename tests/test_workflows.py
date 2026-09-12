@@ -4,6 +4,7 @@ import unittest
 
 
 WORKFLOWS = Path(__file__).resolve().parents[1] / "example_workflows"
+WEB_EXTENSION = Path(__file__).resolve().parents[1] / "web" / "longcaster.js"
 WORKFLOW_NAMES = (
     "longcaster_pdd_ref2va.json",
     "longcaster_pdd_refpatch.json",
@@ -148,6 +149,20 @@ class WorkflowSerializationTests(unittest.TestCase):
         links = {item[0]: item for item in workflow["links"]}
         self.assertEqual(links[selector["inputs"][0]["link"]][1], 3)
         self.assertEqual(selector["outputs"][2]["name"], "selected_frame")
+
+    def test_web_extension_exposes_stage_2c_cards_workspace(self):
+        source = WEB_EXTENSION.read_text(encoding="utf-8")
+        self.assertIn('"Open Cards Interface"', source)
+        for section in (
+            "subject_definitions", "summary", "retention_analysis", "detailed_description",
+            "overall_soundscape", "non_diegetic_music",
+        ):
+            self.assertIn(f'["{section}"', source)
+        for endpoint in (
+            "/longcaster/cards/projects", "/longcaster/cards/state",
+            "/longcaster/cards/card", "/longcaster/cards/copy", "/longcaster/cards/preview",
+        ):
+            self.assertIn(endpoint, source)
 
 
 if __name__ == "__main__":

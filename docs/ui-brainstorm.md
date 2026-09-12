@@ -1,6 +1,6 @@
 # LongCaster UI and workflow brainstorm
 
-Status: exploratory notes only. These are product directions and open questions, not an implementation plan or committed scope.
+Status: exploratory notes except for the Stage 2C Cards Interface + Structured Prompt Editor MVP now committed in `stage-2c-cards-interface.md`. That document controls Stage 2C scope when these ideas differ.
 
 ## Render and preview behavior
 

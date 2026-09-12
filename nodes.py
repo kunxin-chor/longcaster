@@ -28,6 +28,7 @@ from .longcaster.mmh3_adapter import (
     reference_snapshot,
 )
 from .longcaster.project import ProjectError, ProjectStore, sha256_file
+from .longcaster.prompt_sections import hash_prompt
 from .longcaster.preview import encode_project_preview
 from .longcaster.state_anchor import (
     IDENTITY_NATIVE_MECHANISM,
@@ -274,6 +275,8 @@ class LongCasterProject:
             raise ProjectError("PDD sampling requires sampler_name=euler")
 
         current = store.active_card(manifest)
+        if current.get("prompt_format") == "structured_v1":
+            prompt = current["assembled_prompt"]
         parent = store.parent_card(manifest, current)
         context_frames = H3_CONTINUATION_CONTEXT_FRAMES if parent else 0
         duration = resolve_duration(duration_seconds, context_frames=context_frames)
@@ -398,6 +401,7 @@ class LongCasterProject:
             "version": 1,
             "project_mode": generation_mode,
             "prompt": prompt,
+            "prompt_hash": hash_prompt(prompt),
             "effective_prompt": effective_prompt,
             "requested_duration_seconds": float(duration_seconds),
             "duration_plan": duration.__dict__,
@@ -474,7 +478,11 @@ class LongCasterProject:
                 "timeline_index": started_card["timeline_index"],
                 "attempt": started_card["attempt"] + 1,
                 "generation_parent_id": started_card.get("generation_parent_id"),
+                "timeline_predecessor_id": started_card.get("timeline_predecessor_id"),
+                "continuation_strategy": started_card.get("continuation_strategy"),
                 "prompt": prompt,
+                "prompt_hash": hash_prompt(prompt),
+                "prompt_sections": started_card.get("prompt_sections") if started_card.get("prompt_format") == "structured_v1" else None,
                 "seed": int(seed),
                 "generation_fingerprint": fingerprint,
                 "context_frame_count": context_frames,

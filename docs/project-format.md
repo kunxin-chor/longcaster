@@ -22,13 +22,13 @@
 
 ## Manifest
 
-`project.json` schema version 5 contains project-wide fixed settings and a list of cards. Schema 1–4 projects migrate in place by adding missing anchor, identity-binding, publication-history, and identity-scope fields; MMH3 masters are not changed. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 6 contains project-wide fixed settings and a list of cards. Schema 1–5 projects migrate in place by adding missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, and structured-prompt fields; MMH3 masters are not changed. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `5`. |
+| `schema_version` | Manifest schema, currently `6`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | Fixed `ref2va` or `t2va` mode. |
@@ -47,8 +47,13 @@ Card fields include:
 | `timeline_index` | Display/timeline order. It is not identity. |
 | `artifact_number` | Non-reused accepted filename number. |
 | `generation_parent_id` | UUID of the accepted generation source. |
-| `status` | `EMPTY`, `DRAFT`, or `ACCEPTED`. |
-| `prompt`, `seed` | Card generation inputs. |
+| `timeline_predecessor_id` | UUID of the preceding assembled-timeline card; independent of generation ancestry. |
+| `status` | `EMPTY`, `DRAFT`, `ACCEPTED`, or `FAILED`. A failed Retry retains the prior usable `DRAFT`. |
+| `prompt`, `assembled_prompt`, `prompt_hash`, `seed` | Assembled generation prompt compatibility value, canonical user prompt, its UTF-8 SHA-256, and seed. |
+| `prompt_format`, `prompt_sections` | `structured_v1` six-section records or an untouched `legacy_flat` prompt, plus text/provenance records. |
+| `continuation_strategy`, `reference_set` | Explicit continuation choice and the last graph-provided reference snapshot/summary. |
+| `accepted_publication_id` | Stable UUID of the selected accepted take, or `null`. |
+| `draft_inputs_dirty` | Whether prompt/duration/seed changed after the current draft was generated; Accept is blocked until Retry commits a matching draft. |
 | `requested_duration_seconds` | Requested new timeline duration. |
 | `generated_frame_count` | Full sampled target, including continuation context. |
 | `context_frame_count` | Preserved prefix; zero for Card 1 and 39 for direct continuation. |
@@ -67,7 +72,11 @@ The optional `preview` record contains `asset_path`, `asset_sha256`, `source_art
 
 Generation ancestry and timeline order are separate fields. The MVP UI appends a linear tail, while the schema does not infer a parent from `timeline_index`.
 
-Each `publication_history` record has a stable `publication_id`, the old `artifact_number`, immutable `master_path` and SHA-256, acceptance and invalidation timestamps, and snapshots of that publication's anchors and preview metadata. Unpublishing does not rename, overwrite, or delete the old master.
+Structured prompt sections are stored in the fixed order `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`. Each contains exact `text` plus provenance: `source_type`, nullable `source_card_id`, and `modified_after_copy`. The deterministic assembler in `longcaster/prompt_sections.py` owns the XML-style wrapper format and prompt hash. Runtime state/identity reinforcement creates `effective_prompt` in the generation recipe without mutating these saved user sections.
+
+An ambiguous legacy flat prompt remains byte-for-byte unchanged with `prompt_format=legacy_flat`. A prompt containing one ordered, unambiguous instance of all six canonical XML tags migrates to structured records. Explicit user conversion is required for every other flat prompt.
+
+Each `publication_history` record has a stable `publication_id`, the old `artifact_number`, immutable `master_path` and SHA-256, acceptance and invalidation timestamps, and snapshots of that publication's anchors, preview, prompt sections/hash, ancestry, seed/duration, continuation/reference data, generation fingerprint, and recipe. Unpublishing does not rename, overwrite, or delete the old master.
 
 ## Commit and recovery rules
 

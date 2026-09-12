@@ -482,10 +482,13 @@ These are ownership boundaries only; no future strategy is implemented or invest
 | Branch from older MMH3 | Explicit generation parent UUID/hash independent of timeline placement |
 | Bridge retakes | New artifact with explicit source/target lineage; replace a timeline reference, not master bytes |
 | Per-card latent/PDD upscale | Derived artifact/refinement stage with its own strategy, recipe, geometry and ancestry |
+| Cards workspace and structured prompts | Revision-checked project/card service over the existing manifest lock; deterministic six-section assembly before runtime anchor reinforcement |
 
 Do not expose unused future sockets now. Preserve original masters and make derived variants explicit. A future resolution-changing strategy must create a compatible continuation source deliberately; direct MVP continuation rejects a resolution mismatch.
 
-## 11. MVP Implementation Phases
+## 11. Implementation Phases
+
+The original MVP phases 1–6 below are implemented. Actual long-run testing changed the next priority: practical card authoring must precede drift-control experiments so repeatable 10–20+ card benchmarks are feasible.
 
 1. **MMH3 adapter and runtime contract.** Resolve the installed dependency; implement fresh packet packing, save/load, H3 contract validation, direct handover, and duration conversion. **Gate:** exact separate-process roundtrip; valid/invalid geometry and boundaries; no parent mutation; production runtime uses real Comfy NestedTensor. Reproduce the CPU investigation probe as focused adapter tests.
 2. **Native sampling integration.** Build the smallest T2VA and direct-continuation graph/path using externally supplied MODEL, CLIP, and SIGMAS. **Gate:** full draft archive from Card 1; load it in a fresh ComfyUI process and generate Card 2; verify shape, masks, prefix preservation within numerical tolerance, audio decoding, cancellation, and no internal diffusion load. Confirm wrapper execution on the supplied patcher.
@@ -493,8 +496,15 @@ Do not expose unused future sockets now. Preserve original masters and make deri
 4. **Project storage and commands.** Implement schema, UUIDs, parent references, locks, attempt snapshots, Generate/Retry/Accept/Append, and journals. **Gate:** failures injected before/after each artifact/manifest publication boundary; duplicate commands and stale revisions; Retry/Accept never alter accepted parent hashes; restart retains prior draft after failed Retry.
 5. **Minimal card UI and review.** Add project open/create, one-card editor, four actions, audio/video preview, and state synchronization. **Gate:** user can complete Generate → Retry → Accept → Append → Generate, close/restart ComfyUI, reopen the project, and continue with reconnected upstream inputs. Fixed-seed Retry must still execute; passive reload must not generate.
 6. **Release acceptance.** Validate derived trimming/timing, missing/corrupt files, multiple tabs, project move/reopen, dependency diagnostics, host-memory use, and Windows publication behavior. **Gate:** at least three accepted independent archives, deletion of previews has no effect on continuation, parent/timeline distinction is supported by schema/service validation, and no master depends on a session cache.
+7. **Stage 2A current-state anchors — implemented; visual A/B pending.** Persist the accepted final frame and apply it at the direct-continuation handover boundary without changing the immutable master.
+8. **Stage 2B historical identity anchors — implemented; visual A/B pending.** Persist a manually selected accepted-card frame, bind it by UUID to the subject, and apply it as a native image reference independently of the current-state guide.
+9. **Stage 2C Cards Interface + Structured Prompt Editor — implemented; interactive/GPU acceptance pending.** Schema-backed six-section prompt records, deterministic assembly, section provenance/inheritance, explicit timeline predecessors, and a revision-safe all-cards workspace sit over the existing generation controller. Legacy flat prompts remain unchanged until explicit conversion and accepted cards remain read-only. **Gate:** complete the documented Card 7→8 workflow and a restart-safe 10–20+ card authoring run. See `docs/stage-2c-cards-interface.md`.
+10. **Stage 3A long-run drift benchmark.** Use the Cards workspace to identify when and how visual/audio drift begins under repeatable settings.
+11. **Stage 3B Context Loop / Drift Control AV.** Integrate only as an optional continuation strategy after the benchmark.
+12. **Stage 3C color-stable drift control.** Add only if measured color/luma/saturation drift justifies it.
+13. **Stage 3D CLSS experimental backend.** Evaluate only after simpler drift-control strategies have measured results.
 
-Do not begin advanced modes, drift stabilization, batch scheduling, upscale, or a branch editor before these gates pass.
+Do not begin Context Loop, Drift Control, color-stable drift, CLSS, batch scheduling, upscale, or a branch editor before the Stage 2C and 3A gates pass.
 
 ## 12. Risks / Open Questions
 
@@ -515,4 +525,4 @@ The investigation executed only lightweight CPU persistence/continuation checks.
 
 **GO** for MVP implementation using MMH3's low-level artifact/continuation APIs and the standard ComfyUI sampling lifecycle. Exclude MMH3's patched-model-rejecting Sampling preset. Keep MODEL preparation and PDD logic upstream, and preserve external SIGMAS unchanged.
 
-**Exact first implementation task:** implement `mmh3_adapter.py` for fresh packet creation, completed sampled-latent packing, `.mmh3` save/load, strict H3 source validation, and the fixed 39-frame direct handover; add its separate-process roundtrip and boundary tests. Complete that gate before building the session UI or attempting PDD generation.
+**Current acceptance task:** exercise Stage 2C in the target ComfyUI build: verify the Cards workspace visually, complete the Card 7→8 section-copy flow, and run a restart-safe 10–20+ card GPU sequence. Do not alter the established MMH3 adapter, sampler ownership, PDD wiring, or accepted-master publication contract while resolving interface defects.

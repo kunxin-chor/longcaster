@@ -13,9 +13,21 @@ import threading
 import uuid
 from typing import Any, Iterator
 
+from .prompt_sections import (
+    assemble_prompt,
+    copy_sections,
+    edit_sections,
+    empty_prompt_sections,
+    hash_prompt,
+    inherited_prompt_sections,
+    prompt_fields,
+    section_record,
+    validate_prompt_sections,
+)
 
-SCHEMA_VERSION = 5
-VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED"}
+
+SCHEMA_VERSION = 6
+VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
@@ -105,20 +117,37 @@ def _new_card(
     timeline_index: int,
     artifact_number: int,
     parent_id: str | None,
+    timeline_predecessor_id: str | None,
     prompt: str,
     duration_seconds: float,
     seed: int,
 ) -> dict[str, Any]:
     now = utc_now()
+    structured = prompt_fields(prompt)
+    if prompt == "":
+        sections = empty_prompt_sections()
+        assembled = assemble_prompt(sections)
+        structured = {
+            "prompt_sections": sections,
+            "prompt_format": "structured_v1",
+            "assembled_prompt": assembled,
+            "prompt_hash": hash_prompt(assembled),
+        }
     return {
         "id": str(uuid.uuid4()),
         "timeline_index": timeline_index,
         "artifact_number": artifact_number,
         "generation_parent_id": parent_id,
+        "timeline_predecessor_id": timeline_predecessor_id,
         "status": "EMPTY",
-        "prompt": prompt,
+        "prompt": structured["assembled_prompt"],
+        **structured,
         "requested_duration_seconds": float(duration_seconds),
         "seed": int(seed),
+        "continuation_strategy": "direct_mmh3" if parent_id else "independent",
+        "reference_set": None,
+        "accepted_publication_id": None,
+        "draft_inputs_dirty": False,
         "attempt": 0,
         "draft_path": None,
         "master_path": None,
@@ -175,6 +204,7 @@ class ProjectStore:
                 timeline_index=0,
                 artifact_number=1,
                 parent_id=None,
+                timeline_predecessor_id=None,
                 prompt=prompt,
                 duration_seconds=duration_seconds,
                 seed=seed,
@@ -211,6 +241,8 @@ class ProjectStore:
             ):
                 card = self._card(manifest, pending.get("card_id"))
                 card["last_error"] = "Generation was interrupted before its draft was committed."
+                if pending.get("previous_card_status") in {"EMPTY", "FAILED"}:
+                    card["status"] = "FAILED"
                 card["updated_at"] = utc_now()
                 operation_record = {key: value for key, value in pending.items() if key != "candidate"}
                 manifest["last_operation"] = {**operation_record, "status": "interrupted", "ended_at": utc_now()}
@@ -240,9 +272,12 @@ class ProjectStore:
                     "another project operation is already pending; use Stop Render / Unlock"
                 )
             card = self._active_card(manifest)
-            expected = "EMPTY" if action == "generate" else "DRAFT"
-            if card["status"] != expected:
-                raise ProjectError(f"{action} requires an {expected} card; current state is {card['status']}")
+            if card.get("prompt_format") == "structured_v1":
+                prompt = card["assembled_prompt"]
+            expected = {"EMPTY", "FAILED"} if action == "generate" else {"DRAFT"}
+            if card["status"] not in expected:
+                label = "EMPTY or FAILED" if action == "generate" else "DRAFT"
+                raise ProjectError(f"{action} requires a {label} card; current state is {card['status']}")
             operation_id = str(uuid.uuid4())
             operation = {
                 "id": operation_id,
@@ -252,6 +287,7 @@ class ProjectStore:
                 "started_at": utc_now(),
                 "owner_runtime_id": _RUNTIME_ID,
                 "owner_pid": os.getpid(),
+                "previous_card_status": card["status"],
                 "candidate": {
                     "prompt": prompt,
                     "requested_duration_seconds": float(duration_seconds),
@@ -290,8 +326,12 @@ class ProjectStore:
                 raise ProjectError("draft archive hash changed before commit")
             old_draft = card.get("draft_path")
             candidate = pending.get("candidate", {})
+            candidate_prompt = candidate.get("prompt", card["prompt"])
+            if card.get("prompt_format") == "legacy_flat":
+                card["assembled_prompt"] = candidate_prompt
+                card["prompt_hash"] = hash_prompt(candidate_prompt)
             card.update({
-                "prompt": candidate.get("prompt", card["prompt"]),
+                "prompt": candidate_prompt,
                 "requested_duration_seconds": candidate.get(
                     "requested_duration_seconds", card["requested_duration_seconds"]
                 ),
@@ -299,6 +339,9 @@ class ProjectStore:
                 "recipe": deepcopy(candidate.get("recipe", card.get("recipe"))),
                 "generation_fingerprint": candidate.get(
                     "generation_fingerprint", card.get("generation_fingerprint")
+                ),
+                "reference_set": deepcopy(
+                    (candidate.get("recipe") or {}).get("references", card.get("reference_set"))
                 ),
                 "status": "DRAFT",
                 "attempt": int(card.get("attempt", 0)) + 1,
@@ -311,6 +354,7 @@ class ProjectStore:
                 "actual_duration_seconds": float(actual_duration_seconds),
                 "updated_at": utc_now(),
                 "last_error": None,
+                "draft_inputs_dirty": False,
             })
             operation_record = {key: value for key, value in pending.items() if key != "candidate"}
             manifest["last_operation"] = {**operation_record, "status": "complete", "ended_at": utc_now()}
@@ -331,6 +375,8 @@ class ProjectStore:
                 return
             card = self._card(manifest, pending["card_id"])
             card["last_error"] = str(error)[:4000]
+            if pending.get("previous_card_status") in {"EMPTY", "FAILED"}:
+                card["status"] = "FAILED"
             card["updated_at"] = utc_now()
             operation_record = {key: value for key, value in pending.items() if key != "candidate"}
             manifest["last_operation"] = {
@@ -372,6 +418,8 @@ class ProjectStore:
             card = self._active_card(manifest)
             if card["status"] != "DRAFT":
                 raise ProjectError(f"accept requires a DRAFT card; current state is {card['status']}")
+            if card.get("draft_inputs_dirty"):
+                raise ProjectError("card inputs changed after generation; Retry Draft before accepting")
             source = self.absolute_path(card["draft_path"])
             if not source.is_file() or sha256_file(source) != card["artifact_sha256"]:
                 raise ProjectError("draft archive is missing or does not match its recorded hash")
@@ -389,6 +437,7 @@ class ProjectStore:
                 "source": card["draft_path"],
                 "destination": relative_destination,
                 "sha256": card["artifact_sha256"],
+                "publication_id": str(uuid.uuid4()),
                 "anchor": deepcopy(anchor),
                 "created_at": utc_now(),
             }
@@ -457,7 +506,7 @@ class ProjectStore:
             old_anchors = deepcopy(card.get("anchors", []))
             history = card.setdefault("publication_history", [])
             history.append({
-                "publication_id": str(uuid.uuid4()),
+                "publication_id": card.get("accepted_publication_id") or str(uuid.uuid4()),
                 "artifact_number": old_artifact_number,
                 "master_path": master_relative,
                 "artifact_sha256": artifact_hash,
@@ -465,6 +514,20 @@ class ProjectStore:
                 "invalidated_at": utc_now(),
                 "anchors": old_anchors,
                 "preview": deepcopy(card.get("preview")),
+                "generation_parent_id": card.get("generation_parent_id"),
+                "timeline_predecessor_id": card.get("timeline_predecessor_id"),
+                "prompt": card.get("prompt"),
+                "prompt_format": card.get("prompt_format"),
+                "prompt_sections": deepcopy(card.get("prompt_sections")),
+                "assembled_prompt": card.get("assembled_prompt"),
+                "prompt_hash": card.get("prompt_hash"),
+                "seed": card.get("seed"),
+                "requested_duration_seconds": card.get("requested_duration_seconds"),
+                "actual_duration_seconds": card.get("actual_duration_seconds"),
+                "continuation_strategy": card.get("continuation_strategy"),
+                "reference_set": deepcopy(card.get("reference_set")),
+                "generation_fingerprint": card.get("generation_fingerprint"),
+                "recipe": deepcopy(card.get("recipe")),
             })
             archived_anchor_ids = {
                 item.get("anchor_id") for item in old_anchors if item.get("anchor_id")
@@ -486,10 +549,12 @@ class ProjectStore:
                 "draft_path": self.relative_path(draft),
                 "master_path": None,
                 "accepted_at": None,
+                "accepted_publication_id": None,
                 "anchors": [],
                 "preview": None,
                 "updated_at": utc_now(),
                 "last_error": None,
+                "draft_inputs_dirty": False,
             })
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()),
@@ -638,6 +703,144 @@ class ProjectStore:
             self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
+    def card(self, manifest: dict[str, Any], card_id: str) -> dict[str, Any]:
+        return deepcopy(self._card(manifest, card_id))
+
+    def update_card_editor(
+        self,
+        *,
+        card_id: str,
+        expected_revision: int,
+        section_changes: dict[str, str] | None = None,
+        clear_sections: list[str] | None = None,
+        duration_seconds: float | None = None,
+        seed: int | None = None,
+        convert_legacy: bool = False,
+    ) -> dict[str, Any]:
+        """Autosave editable card inputs with optimistic revision protection."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot edit a card while generation is pending")
+            card = self._card(manifest, card_id)
+            if card_id != manifest.get("active_card_id"):
+                raise ProjectError("only the active generation card is editable")
+            if card["status"] not in {"EMPTY", "DRAFT", "FAILED"}:
+                raise ProjectError("accepted cards are read-only")
+
+            previous_inputs = (
+                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed")
+            )
+
+            changes = section_changes or {}
+            clears = clear_sections or []
+            try:
+                if convert_legacy:
+                    if card.get("prompt_format") != "legacy_flat":
+                        raise ProjectError("card prompt is already structured")
+                    sections = edit_sections(empty_prompt_sections(), changes)
+                    card["prompt_format"] = "structured_v1"
+                elif changes or clears:
+                    if card.get("prompt_format") != "structured_v1":
+                        raise ProjectError("convert the legacy flat prompt before editing sections")
+                    sections = edit_sections(card["prompt_sections"], changes)
+                else:
+                    sections = card.get("prompt_sections")
+                invalid_clears = set(clears) - set(sections)
+                if invalid_clears:
+                    raise ProjectError(
+                        f"unsupported prompt sections: {', '.join(sorted(invalid_clears))}"
+                    )
+                for name in clears:
+                    sections[name] = section_record()
+                if card.get("prompt_format") == "structured_v1":
+                    assembled = assemble_prompt(sections)
+                    card.update({
+                        "prompt_sections": sections,
+                        "assembled_prompt": assembled,
+                        "prompt": assembled,
+                        "prompt_hash": hash_prompt(assembled),
+                    })
+            except ValueError as exc:
+                raise ProjectError(str(exc)) from exc
+
+            if duration_seconds is not None:
+                duration = float(duration_seconds)
+                if not 0.1 <= duration <= 120.0:
+                    raise ProjectError("duration_seconds must be between 0.1 and 120")
+                card["requested_duration_seconds"] = duration
+            if seed is not None:
+                if isinstance(seed, bool):
+                    raise ProjectError("seed must be an integer")
+                if isinstance(seed, float) and not seed.is_integer():
+                    raise ProjectError("seed must be an integer")
+                value = int(seed)
+                if value < 0 or value > 0xFFFFFFFFFFFFFFFF:
+                    raise ProjectError("seed is outside the supported range")
+                card["seed"] = value
+            if card["status"] == "DRAFT" and previous_inputs != (
+                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed")
+            ):
+                card["draft_inputs_dirty"] = True
+            card["updated_at"] = utc_now()
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def copy_card_sections(
+        self,
+        *,
+        target_card_id: str,
+        source_card_id: str,
+        names: list[str],
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot edit a card while generation is pending")
+            target = self._card(manifest, target_card_id)
+            source = self._card(manifest, source_card_id)
+            if target_card_id != manifest.get("active_card_id"):
+                raise ProjectError("only the active generation card is editable")
+            if target["status"] not in {"EMPTY", "DRAFT", "FAILED"}:
+                raise ProjectError("accepted cards are read-only")
+            if target.get("prompt_format") != "structured_v1":
+                raise ProjectError("convert the legacy flat prompt before copying sections")
+            if source.get("prompt_format") != "structured_v1":
+                raise ProjectError("the source card has a legacy flat prompt")
+            try:
+                previous_prompt = target.get("prompt")
+                sections = copy_sections(
+                    target["prompt_sections"],
+                    source["prompt_sections"],
+                    source_card_id=source_card_id,
+                    names=names,
+                    previous=target.get("timeline_predecessor_id") == source_card_id,
+                )
+                assembled = assemble_prompt(sections)
+            except ValueError as exc:
+                raise ProjectError(str(exc)) from exc
+            target.update({
+                "prompt_sections": sections,
+                "assembled_prompt": assembled,
+                "prompt": assembled,
+                "prompt_hash": hash_prompt(assembled),
+                "updated_at": utc_now(),
+            })
+            if target["status"] == "DRAFT" and target["prompt"] != previous_prompt:
+                target["draft_inputs_dirty"] = True
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    @staticmethod
+    def _require_revision(manifest: dict[str, Any], expected_revision: int) -> None:
+        if isinstance(expected_revision, bool) or int(expected_revision) != int(manifest.get("revision", -1)):
+            raise ProjectError(
+                f"stale project revision: expected {expected_revision}, current {manifest.get('revision')}"
+            )
+
     def append(self, *, prompt: str, duration_seconds: float, seed: int) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -657,10 +860,26 @@ class ProjectStore:
                     ]
                 ) + 1,
                 parent_id=current["id"],
+                timeline_predecessor_id=current["id"],
                 prompt=prompt,
                 duration_seconds=duration_seconds,
                 seed=seed,
             )
+            if not prompt:
+                source_sections = (
+                    current["prompt_sections"]
+                    if current.get("prompt_format") == "structured_v1"
+                    else empty_prompt_sections()
+                )
+                sections = inherited_prompt_sections(source_sections, current["id"])
+                assembled = assemble_prompt(sections)
+                card.update({
+                    "prompt_sections": sections,
+                    "prompt_format": "structured_v1",
+                    "assembled_prompt": assembled,
+                    "prompt": assembled,
+                    "prompt_hash": hash_prompt(assembled),
+                })
             manifest["cards"].append(card)
             manifest["active_card_id"] = card["id"]
             manifest["last_operation"] = {
@@ -781,8 +1000,54 @@ class ProjectStore:
             ids.add(card.get("id"))
             if card.get("timeline_index") != index:
                 raise ProjectError("card timeline indexes are not contiguous")
+            predecessor_id = card.get("timeline_predecessor_id")
+            if index == 0 and predecessor_id is not None:
+                raise ProjectError("the first card cannot have a timeline predecessor")
+            if predecessor_id is not None and predecessor_id not in ids:
+                raise ProjectError("timeline predecessor must be an earlier card UUID")
+            parent_id = card.get("generation_parent_id")
+            if parent_id is not None and parent_id not in ids:
+                raise ProjectError("generation parent must be an earlier card UUID")
             if card.get("status") not in VALID_STATES:
                 raise ProjectError(f"invalid card state: {card.get('status')}")
+            prompt_format = card.get("prompt_format")
+            if prompt_format not in {"legacy_flat", "structured_v1"}:
+                raise ProjectError("card prompt_format must be legacy_flat or structured_v1")
+            try:
+                validate_prompt_sections(card.get("prompt_sections"))
+            except ValueError as exc:
+                raise ProjectError(str(exc)) from exc
+            for record in card["prompt_sections"].values():
+                source_card_id = record["provenance"].get("source_card_id")
+                if source_card_id is not None and (
+                    source_card_id == card.get("id") or source_card_id not in ids
+                ):
+                    raise ProjectError("prompt section source must be an earlier card UUID")
+            prompt = card.get("prompt")
+            assembled = card.get("assembled_prompt")
+            if not isinstance(prompt, str) or not isinstance(assembled, str) or prompt != assembled:
+                raise ProjectError("card prompt must match assembled_prompt")
+            if prompt_format == "structured_v1" and assemble_prompt(card["prompt_sections"]) != assembled:
+                raise ProjectError("structured card assembled_prompt is stale")
+            if card.get("prompt_hash") != hash_prompt(assembled):
+                raise ProjectError("card prompt_hash does not match assembled_prompt")
+            if card.get("continuation_strategy") not in {"independent", "direct_mmh3"}:
+                raise ProjectError("card has an invalid continuation_strategy")
+            if card.get("reference_set") is not None and not isinstance(card.get("reference_set"), dict):
+                raise ProjectError("card reference_set must be an object or null")
+            if not isinstance(card.get("draft_inputs_dirty"), bool):
+                raise ProjectError("card draft_inputs_dirty must be boolean")
+            accepted_publication_id = card.get("accepted_publication_id")
+            if card.get("status") == "ACCEPTED":
+                try:
+                    uuid.UUID(accepted_publication_id)
+                except (ValueError, AttributeError) as exc:
+                    raise ProjectError("accepted_publication_id must be a UUID for accepted cards") from exc
+                if accepted_publication_id in publication_ids:
+                    raise ProjectError("publication IDs must be unique")
+                publication_ids.add(accepted_publication_id)
+            elif accepted_publication_id is not None:
+                raise ProjectError("only accepted cards may have accepted_publication_id")
             if card.get("status") == "ACCEPTED":
                 number = card.get("artifact_number")
                 if number in accepted_numbers:
@@ -882,15 +1147,34 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4}:
+        if version not in {1, 2, 3, 4, 5}:
             raise ProjectError(f"unsupported project schema: {version}")
+        previous_id = None
         for card in manifest.get("cards", []):
             card.setdefault("anchors", [])
             card.setdefault("publication_history", [])
+            card.setdefault("timeline_predecessor_id", previous_id)
+            fields = prompt_fields(card.get("prompt", ""))
+            for key, value in fields.items():
+                card.setdefault(key, value)
+            card["prompt"] = card["assembled_prompt"]
+            card.setdefault(
+                "continuation_strategy",
+                "direct_mmh3" if card.get("generation_parent_id") else "independent",
+            )
+            recipe = card.get("recipe") or {}
+            references = recipe.get("references") if isinstance(recipe, dict) else None
+            card.setdefault("reference_set", deepcopy(references) if isinstance(references, dict) else None)
+            card.setdefault(
+                "accepted_publication_id",
+                str(uuid.uuid4()) if card.get("status") == "ACCEPTED" else None,
+            )
+            card.setdefault("draft_inputs_dirty", False)
             for anchor in card["anchors"]:
                 if anchor.get("role") == "identity":
                     anchor.setdefault("identity_scope", "face_only")
                     anchor.setdefault("custom_identity_instruction", None)
+            previous_id = card.get("id")
         manifest.setdefault("active_identity_anchors", {})
         manifest["schema_version"] = SCHEMA_VERSION
         return True
@@ -970,9 +1254,11 @@ class ProjectStore:
             "master_path": transaction["destination"],
             "draft_path": None,
             "artifact_sha256": transaction["sha256"],
+            "accepted_publication_id": transaction.get("publication_id") or str(uuid.uuid4()),
             "accepted_at": utc_now(),
             "updated_at": utc_now(),
             "last_error": None,
+            "draft_inputs_dirty": False,
         })
         manifest["last_operation"] = {
             "id": str(uuid.uuid4()), "kind": "accept", "status": "complete", "ended_at": utc_now()
