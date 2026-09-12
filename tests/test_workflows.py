@@ -161,8 +161,17 @@ class WorkflowSerializationTests(unittest.TestCase):
         for endpoint in (
             "/longcaster/cards/projects", "/longcaster/cards/state",
             "/longcaster/cards/card", "/longcaster/cards/copy", "/longcaster/cards/preview",
+            "/longcaster/cards/project", "/longcaster/cards/anchor", "/longcaster/cards/identity",
         ):
             self.assertIn(endpoint, source)
+        for control in (
+            "New Project", "Identity Checkpoints", "Reference Resources",
+            "Continue previous card (direct MMH3)", "Historical flat prompt",
+            "Megapixels (MP)", "PROJECT_RESOLUTION_MULTIPLE = 32",
+            "loadEpoch", "loadProjects(body.project, false)",
+            "Paste Full Prompt", "import_prompt: pasted",
+        ):
+            self.assertIn(control, source)
 
 
 if __name__ == "__main__":

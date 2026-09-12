@@ -9,14 +9,14 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 - Patch-agnostic upstream `MODEL` input and Comfy Basic Guider sampling.
 - Optional external `SIGMAS`, with finite/decreasing/terminal-zero validation and direct forwarding to the advanced sampler.
 - PDD-first default (`require_external_sigmas=true`) and a supported stock-REF2VA PDD example workflow.
-- Fixed REF2VA projects with MMH3 image/video/audio reference resolution on every card, including direct-continuation cards.
-- Fixed T2VA projects as the standard sampling baseline.
+- REF2VA projects with MMH3 image/video/audio reference resolution on every card, including direct-continuation cards.
+- T2VA projects as the standard sampling baseline. A pristine first card may switch between T2VA and REF2VA; the selected project mode locks when rendering begins.
 - MMH3 card packing, full archive verification, immutable accepted masters, and hash validation.
 - Direct joint audio/video latent continuation behind `DirectLatentContinuation`, with a 39-frame handover and no VAE round trip.
 - Stage 2A automatic current-state anchors: lossless final-frame PNG extraction at acceptance, UUID-backed card metadata, native H3 `MiniMaxH3AddGuide` conditioning at the handover boundary, and optional minimal prompt reinforcement.
 - Stage 2B manual identity anchors: preview-relative frame selection from immutable accepted cards, project-level subject binding, lossless historical PNG persistence, native H3 `minimax_refs` conditioning without a spatial keyframe, and persisted prompt scopes for limiting attribute inheritance.
 - Visual Stage 2B picker: server-side project/card discovery, an embedded project-preview player with playhead-to-frame synchronization, exact MMH3 frame confirmation, direct enable/disable/clear controls, and optional one-frame `IMAGE` input interoperability.
-- Stage 2C Cards workspace: all-card inspection, registered preview playback, state-aware controller actions, six-section editing, section-level copy/clear, provenance display, deterministic assembled-prompt preview, debounced autosave, and revision-conflict protection.
+- LongCaster Studio workspace: project creation/opening under the managed output root, all-card inspection, registered preview playback/rebuild controls, readable ancestry/resource numbering, historical identity selection and control, state-aware controller actions, per-card continuation choice, side-by-side full/section prompt editing, full-prompt paste and automatic section assignment, section-level copy/clear, safe labelled-flat-prompt conversion, provenance display, debounced autosave, and revision-conflict protection.
 - Schema 6 structured prompt persistence: explicit timeline predecessors, stable accepted-publication IDs, prompt sections/provenance/hash, continuation/reference summaries, safe flat-prompt migration, inherited new-card defaults, and a `FAILED` state that never replaces a usable retry draft.
 - Project-owned preview registration: reuse the existing VHS encode, copy it under the card UUID in `previews/`, and bind it to the exact draft/master artifact hash without changing the MMH3 master.
 - Preview backfill for older projects: decode the visible accepted-card frames once and write a silent NVENC navigation MP4; the resulting identity anchor is still extracted separately from the immutable MMH3 source.
@@ -31,7 +31,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 
 ## Priority-driven deviation
 
-The initial MVP brief allowed T2VA Card 1 and deferred mixed card modes. The production note prioritizes REF2VA, the REF2VA/FL2VA hybrid model, reusable references, and PDD-ACC. LongCaster therefore supports a **fixed REF2VA project mode** immediately and sends the same reference packet into conditioning for every card. It still does not permit card-by-card mode switching, so the original mixed-mode deferral remains intact.
+The initial MVP brief allowed T2VA Card 1 and deferred mixed card modes. The production note prioritizes REF2VA, the REF2VA/FL2VA hybrid model, reusable references, and PDD-ACC. LongCaster sends the same reference packet into conditioning for every card in an REF2VA project. A pristine project can switch between T2VA and REF2VA, but it still does not permit card-by-card mode switching, so the original mixed-mode deferral remains intact.
 
 PDD remains external. LongCaster does not copy PDD logic; it consumes PDD Apply's patched model and exact schedule. The external-sigma requirement is enabled by default but can be disabled for the standard workflow.
 
@@ -58,8 +58,8 @@ Automated checks do not measure whether the model obeys the visual state strongl
 
 ## Known limits
 
-- Project mode and resolution cannot change after creation.
-- REF2VA resume requires the reference packet to be connected again before generating another card.
+- Project resolution cannot change after creation. Generation mode can change only while the first card is still pristine; it locks after the first render.
+- REF2VA resume requires the reference packet to be connected again before generating another card. The Studio can enumerate recorded resource kinds and IDs and focus the connected packet node, but it cannot edit media that was never persisted in the project manifest.
 - The Cards workspace can inspect every card, but generation and editing still target one active linear tail even though ancestry is stored separately.
 - Unpublish currently applies only to the latest accepted tail. The publication-history model is intended to support future per-card versioning controls and explicit descendant invalidation when editing a middle card.
 - Preview context trimming uses the model's 24 fps timing to trim decoded audio samples.

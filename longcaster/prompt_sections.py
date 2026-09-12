@@ -80,7 +80,8 @@ def validate_prompt_sections(sections: Mapping[str, Any]) -> None:
 def assemble_prompt(sections: Mapping[str, Any]) -> str:
     validate_prompt_sections(sections)
     return "\n\n".join(
-        f"<{name}>\n{sections[name]['text']}\n</{name}>" for name in PROMPT_SECTION_NAMES
+        f"{name}:" + (f"\n{sections[name]['text']}" if sections[name]["text"] else "")
+        for name in PROMPT_SECTION_NAMES
     )
 
 
@@ -99,7 +100,7 @@ def _remove_framing_newlines(value: str) -> str:
 
 
 def parse_legacy_prompt(prompt: str) -> dict[str, dict[str, Any]] | None:
-    """Parse one unambiguous, ordered set of the six canonical XML-style sections."""
+    """Parse the obsolete XML-style form so existing projects can migrate safely."""
     if not isinstance(prompt, str):
         raise ValueError("prompt must be a string")
     records: dict[str, dict[str, Any]] = {}
@@ -125,6 +126,88 @@ def parse_legacy_prompt(prompt: str) -> dict[str, dict[str, Any]] | None:
     if prompt[position:].strip():
         return None
     return records
+
+
+def parse_labeled_prompt(prompt: str) -> dict[str, dict[str, Any]] | None:
+    """Parse the common ``section_name:`` flat format when all six labels are unambiguous."""
+    if not isinstance(prompt, str):
+        raise ValueError("prompt must be a string")
+    def label_pattern(name: str) -> str:
+        return r"[ _-]+".join(re.escape(part) for part in name.split("_"))
+
+    labels = {
+        name: re.compile(
+            rf"(?im)^[ \t]*(?:#+[ \t]*)?{label_pattern(name)}[ \t]*:[ \t]*$"
+        )
+        for name in PROMPT_SECTION_NAMES
+    }
+    matches = []
+    for name in PROMPT_SECTION_NAMES:
+        found = list(labels[name].finditer(prompt))
+        if len(found) != 1:
+            return None
+        matches.append((name, found[0]))
+    if [match.start() for _, match in matches] != sorted(match.start() for _, match in matches):
+        return None
+    if prompt[:matches[0][1].start()].strip():
+        return None
+    records: dict[str, dict[str, Any]] = {}
+    for index, (name, match) in enumerate(matches):
+        end = matches[index + 1][1].start() if index + 1 < len(matches) else len(prompt)
+        value = prompt[match.end():end].strip("\r\n")
+        records[name] = section_record(value, source_type="generated_internal")
+    return records
+
+
+def suggested_prompt_sections(prompt: str) -> dict[str, dict[str, Any]] | None:
+    """Return a safe automatic conversion for tagged or canonical labelled prompts."""
+    return parse_legacy_prompt(prompt) or parse_labeled_prompt(prompt)
+
+
+def imported_prompt_sections(prompt: str) -> dict[str, dict[str, Any]]:
+    """Split pasted text by unique canonical labels, falling back to description."""
+    if not isinstance(prompt, str):
+        raise ValueError("imported prompt must be a string")
+    complete = suggested_prompt_sections(prompt)
+    if complete is not None:
+        return complete
+    if not prompt:
+        return empty_prompt_sections()
+
+    matches: list[tuple[str, re.Match[str]]] = []
+    for name in PROMPT_SECTION_NAMES:
+        label = r"[ _-]+".join(re.escape(part) for part in name.split("_"))
+        found = list(
+            re.finditer(
+                rf"(?im)^[ \t]*(?:#+[ \t]*)?{label}[ \t]*:[ \t]*(?P<inline>[^\r\n]*)$",
+                prompt,
+            )
+        )
+        if len(found) > 1:
+            raise ValueError(f"imported prompt contains more than one {name} heading")
+        if found:
+            matches.append((name, found[0]))
+    if not matches:
+        sections = empty_prompt_sections()
+        sections["detailed_description"] = section_record(prompt)
+        return sections
+
+    matches.sort(key=lambda item: item[1].start())
+    sections = empty_prompt_sections()
+    preamble = prompt[:matches[0][1].start()].strip("\r\n")
+    for index, (name, match) in enumerate(matches):
+        end = matches[index + 1][1].start() if index + 1 < len(matches) else len(prompt)
+        inline = match.group("inline").rstrip()
+        following = prompt[match.end():end].strip("\r\n")
+        sections[name] = section_record(
+            f"{inline}\n{following}" if inline and following else inline or following
+        )
+    if preamble:
+        detail = sections["detailed_description"]["text"]
+        sections["detailed_description"] = section_record(
+            f"{preamble}\n\n{detail}" if detail else preamble
+        )
+    return sections
 
 
 def prompt_fields(prompt: str) -> dict[str, Any]:

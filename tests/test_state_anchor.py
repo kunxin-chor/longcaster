@@ -39,7 +39,7 @@ class StateAnchorTests(unittest.TestCase):
             continuation_anchor_frame(0)
 
     def test_prompt_sections_receive_minimal_instruction(self):
-        prompt = "<summary>Walk into the room.</summary>\n<retention_analysis>Keep identity.</retention_analysis>"
+        prompt = "summary:\nWalk into the room.\n\nretention_analysis:\nKeep identity."
         updated, injected, sections = reinforce_prompt(prompt)
         self.assertTrue(injected)
         self.assertEqual(sections, ["summary", "retention_analysis"])
@@ -86,7 +86,7 @@ class StateAnchorTests(unittest.TestCase):
         self.assertIn(identity_instruction("<Subject 1>", 3), updated)
 
     def test_identity_scope_is_first_in_retention_analysis_only(self):
-        prompt = "<summary>Walk out of the pool.</summary>\n<retention_analysis>Keep wet hair.</retention_analysis>"
+        prompt = "summary:\nWalk out of the pool.\n\nretention_analysis:\nKeep wet hair."
         instruction = identity_instruction("<Subject 1>", 3, "face_only")
         updated, injected, sections = reinforce_prompt(
             prompt,
@@ -96,9 +96,9 @@ class StateAnchorTests(unittest.TestCase):
             identity_scope="face_only",
         )
         self.assertTrue(injected)
-        retention = updated.split("<retention_analysis>", 1)[1]
+        retention = updated.split("retention_analysis:", 1)[1]
         self.assertTrue(retention.lstrip().startswith(instruction))
-        self.assertNotIn(instruction, updated.split("</summary>", 1)[0])
+        self.assertNotIn(instruction, updated.split("retention_analysis:", 1)[0])
         self.assertEqual(sections, ["summary", "retention_analysis"])
 
     def test_identity_scope_instructions_limit_unwanted_attributes(self):

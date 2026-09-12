@@ -8,6 +8,8 @@ from longcaster.prompt_sections import (
     empty_prompt_sections,
     hash_prompt,
     inherited_prompt_sections,
+    imported_prompt_sections,
+    parse_labeled_prompt,
     parse_legacy_prompt,
     prompt_fields,
     section_record,
@@ -28,11 +30,13 @@ class PromptSectionTests(unittest.TestCase):
         }
         sections = edit_sections(sections, values)
         assembled = assemble_prompt(sections)
-        positions = [assembled.index(f"<{name}>") for name in PROMPT_SECTION_NAMES]
+        positions = [assembled.index(f"{name}:") for name in PROMPT_SECTION_NAMES]
         self.assertEqual(positions, sorted(positions))
-        parsed = parse_legacy_prompt(assembled)
+        parsed = parse_labeled_prompt(assembled)
         self.assertIsNotNone(parsed)
-        self.assertEqual({name: parsed[name]["text"] for name in PROMPT_SECTION_NAMES}, values)
+        self.assertEqual(parsed["subject_definitions"]["text"], values["subject_definitions"])
+        self.assertEqual(parsed["summary"]["text"], values["summary"])
+        self.assertNotIn("<subject_definitions>", assembled)
         self.assertEqual(assemble_prompt(sections), assembled)
         self.assertEqual(hash_prompt(assembled), hash_prompt(assemble_prompt(sections)))
 
@@ -40,7 +44,7 @@ class PromptSectionTests(unittest.TestCase):
         self.assertIsNone(parse_legacy_prompt("flat prompt"))
         sections = empty_prompt_sections()
         assembled = assemble_prompt(sections)
-        self.assertIsNone(parse_legacy_prompt(assembled.replace("<summary>", "<summary><summary>", 1)))
+        self.assertIsNone(parse_labeled_prompt(assembled.replace("summary:", "summary:\nsummary:", 1)))
         blocks = [f"<{name}>\n\n</{name}>" for name in PROMPT_SECTION_NAMES]
         blocks[0], blocks[1] = blocks[1], blocks[0]
         self.assertIsNone(parse_legacy_prompt("\n\n".join(blocks)))
@@ -50,6 +54,54 @@ class PromptSectionTests(unittest.TestCase):
         self.assertEqual(fields["prompt_format"], "legacy_flat")
         self.assertEqual(fields["assembled_prompt"], "A legacy prompt\nwith exact spacing.  ")
         self.assertTrue(all(not item["text"] for item in fields["prompt_sections"].values()))
+
+    def test_labeled_flat_prompt_can_be_safely_split_on_explicit_conversion(self):
+        prompt = "\n\n".join(
+            f"{name}:\n{name} text\nline two" for name in PROMPT_SECTION_NAMES
+        )
+        parsed = parse_labeled_prompt(prompt)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["summary"]["text"], "summary text\nline two")
+        self.assertEqual(parsed["detailed_description"]["text"], "detailed_description text\nline two")
+        self.assertTrue(all(record["provenance"]["source_type"] == "generated_internal" for record in parsed.values()))
+
+    def test_labeled_flat_prompt_accepts_readable_heading_separators(self):
+        prompt = "\n\n".join(
+            f"## {name.replace('_', ' ').title()}:\n{name} text"
+            for name in PROMPT_SECTION_NAMES
+        )
+        parsed = parse_labeled_prompt(prompt)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["overall_soundscape"]["text"], "overall_soundscape text")
+
+    def test_labeled_parser_rejects_missing_or_ambiguous_headings(self):
+        self.assertIsNone(parse_labeled_prompt("summary:\nOnly one section"))
+        prompt = "\n\n".join(f"{name}:\ntext" for name in PROMPT_SECTION_NAMES)
+        self.assertIsNone(parse_labeled_prompt(f"{prompt}\n\nsummary:\nduplicate"))
+
+    def test_pasted_partial_prompt_assigns_known_sections_and_preserves_preamble(self):
+        prompt = "Shared setup\n\nSummary:\nA short summary.\n\nDetailed Description:\nThe shot."
+        sections = imported_prompt_sections(prompt)
+        self.assertEqual(sections["summary"]["text"], "A short summary.")
+        self.assertEqual(sections["detailed_description"]["text"], "Shared setup\n\nThe shot.")
+        self.assertEqual(sections["retention_analysis"]["text"], "")
+
+    def test_unlabeled_pasted_prompt_falls_back_to_detailed_description(self):
+        sections = imported_prompt_sections("One unlabelled external prompt.")
+        self.assertEqual(
+            sections["detailed_description"]["text"], "One unlabelled external prompt."
+        )
+        self.assertTrue(all(
+            not record["text"] for name, record in sections.items()
+            if name != "detailed_description"
+        ))
+
+    def test_pasted_prompt_accepts_inline_section_text(self):
+        sections = imported_prompt_sections(
+            "Summary: The swimmer rests.\n\nOverall Soundscape: Quiet pool ambience."
+        )
+        self.assertEqual(sections["summary"]["text"], "The swimmer rests.")
+        self.assertEqual(sections["overall_soundscape"]["text"], "Quiet pool ambience.")
 
     def test_copy_and_edit_retain_provenance(self):
         source = edit_sections(empty_prompt_sections(), {"summary": "Source summary"})

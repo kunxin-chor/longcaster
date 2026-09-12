@@ -277,7 +277,11 @@ class LongCasterProject:
         current = store.active_card(manifest)
         if current.get("prompt_format") == "structured_v1":
             prompt = current["assembled_prompt"]
-        parent = store.parent_card(manifest, current)
+        parent = (
+            store.parent_card(manifest, current)
+            if current.get("continuation_strategy") == "direct_mmh3"
+            else None
+        )
         context_frames = H3_CONTINUATION_CONTEXT_FRAMES if parent else 0
         duration = resolve_duration(duration_seconds, context_frames=context_frames)
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)

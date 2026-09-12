@@ -123,7 +123,7 @@ The frontend extension adds seven buttons to the main node. The `action` widget 
 
 Middle-card editing is not exposed yet because descendants were conditioned on the old version. The stored publication history and UUID ancestry provide the basis for a future card interface that can show versions and explicitly invalidate or rebuild downstream cards.
 
-Project mode and canvas size are fixed at creation. This prevents accidental per-card mixing. Use a new project name to change between `ref2va` and `t2va` or to change resolution.
+Project canvas size is fixed at creation. Generation mode can be changed between `ref2va` and `t2va` while the first card is still pristine, then locks when rendering begins. Use a new project name to change resolution or to use a different mode after that point.
 
 Requested duration means new timeline duration. H3 output is aligned to the nearest `17k+5` frame count. A continuation reserves 39 pixel frames as the direct latent handover, so both requested duration and actual new/generated frame counts are recorded.
 
@@ -199,17 +199,23 @@ When `reinforce_state_prompt=true`, the identity-scope instruction is inserted a
 
 For the face-reappearance test, select a clear frontal frame from an early accepted card, generate one or more cards where the face is hidden, then generate the turn-back card twice with the same prompt and seed. First set `use_identity_anchor=false`; Retry with it restored to `true`. Compare facial geometry while confirming clothing and props still follow the immediate parent's current-state anchor and motion still follows its MMH3 latent prefix.
 
-## Stage 2C Cards interface
+## LongCaster Studio project and cards interface
 
-Click **Open Cards Interface** on the **MiniMax H3 LongCaster** project node to open the full-size project workspace. It lists every card and its status, registered preview, ancestry, anchors, reference summary, prompt hash, duration, and seed. Older accepted cards are available as read-only inspection and section-copy sources; generation actions remain attached to the active tail card.
+Click **Open Cards Interface** on the **MiniMax H3 LongCaster** project node to open LongCaster Studio. The project selector opens any validated project under `ComfyUI/output/longcaster_projects`, and **New Project** creates a project with its initial mode, canvas, duration, and seed. Its resolution controls use the built-in ComfyUI Resolution Selector presets and megapixel calculation, with width and height fixed to a multiple of 32; the resolved pixel size is shown before creation. Opening a project also synchronizes the project name, mode, and canvas values on the LongCaster node. Existing projects keep their canvas and generation mode fixed after their first render.
+
+The workspace lists every card and its status, registered preview, readable ancestry, state anchor, identities, reference summary, prompt hash, duration, and seed. The active unrendered card can choose **Continue previous card (direct MMH3)** or **Independent shot**. Direct MMH3 uses the accepted predecessor's joint audio/video latent and 39-frame context; Independent does not use a generation parent.
+
+Identity checkpoints are shown with their source card, visible frame, scope, label, image, and active state. They can be selected, enabled, disabled, or cleared in the workspace. An accepted card can create another identity at its current preview playhead through the workflow's **MiniMax H3 LongCaster Identity Anchor** node. A missing accepted-card preview can also be decoded and built there when that node has a Video VAE connection.
+
+References are displayed using the same media-local numbering used in prompts: `<Picture 1>`, `<Video 1>`, and `<Audio 1>`. The manifest contains resource IDs and kinds, but the actual reusable reference media remains owned by the connected MMH3 packet. **Edit connected reference graph** closes the workspace and focuses that upstream packet node so its resources can be changed without pretending the manifest contains editable image data.
 
 Newly appended cards use the normal six H3 sections: `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`. Subject definitions, retention analysis, soundscape, and non-diegetic music inherit from the previous card by default. Summary and detailed description start empty. Each section records whether it was written manually, copied from the predecessor, copied from another card, or modified after copying.
 
-Edits autosave through the project lock and revision counter. The workspace flushes pending edits before Generate or Retry, assembles the six XML-style sections deterministically, updates the existing node inputs, and queues the existing graph. This does not bypass the patched MODEL, external SIGMAS/PDD, reference packet, direct continuation, or anchor paths.
+Edits autosave through the project lock and revision counter. The workspace flushes pending edits before Generate or Retry, assembles the six plain MiniMax H3 `section_name:` blocks deterministically, updates the existing node inputs, and queues the existing graph. This does not bypass the patched MODEL, external SIGMAS/PDD, reference packet, direct continuation, or anchor paths.
 
 Editing a prompt, duration, or seed after a draft is generated marks its inputs dirty. **Accept Draft** stays disabled until **Retry Draft** succeeds, preventing edited metadata from being attached to an older rendered artifact.
 
-Projects migrated from older schemas keep ambiguous flat prompts exactly unchanged. An editable legacy card offers an explicit **Convert into Detailed Description** action; migration itself never silently wraps or rewrites the text. Prompts already containing one ordered instance of all six canonical tags migrate automatically.
+Projects migrated from older schemas keep ambiguous flat prompts exactly unchanged. An editable legacy card offers an explicit conversion action. On confirmation, prompts with one ordered set of the six canonical `section_name:` headings are distributed automatically; tagged prompts retain their existing parsing; other text falls back to Detailed Description. The historical flat-prompt panel disappears after conversion. Structured editing shows the full assembled prompt beside the selected section and keeps the full-prompt view near the section being edited. **Paste Full Prompt** replaces an editable card from external text: complete or partial canonical headings populate their named sections, a preamble is retained in Detailed Description, and fully unlabelled text falls back there intact. Use `docs/ref2va-longcaster-prompt-guide.md` when asking an AI model to write these sections; it separates authored continuation language from LongCaster's runtime-only anchor instructions.
 
 Projects are stored under:
 

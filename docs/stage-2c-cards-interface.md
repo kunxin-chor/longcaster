@@ -1,6 +1,6 @@
 # Stage 2C: Cards Interface + Structured Prompt Editor MVP
 
-Status: implemented; interactive ComfyUI and local GPU acceptance pending.
+Status: implemented and expanded into LongCaster Studio project/identity/resource management; interactive ComfyUI and local GPU acceptance pending.
 
 ## Goal and acceptance path
 
@@ -19,7 +19,7 @@ The validation path is: open a project; inspect its cards; open Card 7; jump to 
 
 ## Implemented schema
 
-`project.json` advances from schema 5 to schema 6. Existing fields remain valid. These fields are added to each card:
+`project.json` introduced structured card fields in schema 6; schema 7 changes their assembled model prompt to MiniMax H3's plain labeled format. Existing fields remain valid. These fields are present on each card:
 
 | Field | Meaning |
 |---|---|
@@ -33,7 +33,7 @@ The validation path is: open a project; inspect its cards; open Card 7; jump to 
 | `accepted_publication_id` | Stable UUID for the selected accepted take, or `null`. Existing publication history remains immutable. |
 | `draft_inputs_dirty` | `true` when generation inputs changed after the current draft; blocks Accept until Retry produces a matching artifact. |
 
-Keep `prompt` during schema 6 as a compatibility alias containing the exact assembled prompt used by existing controller and archive paths. New code must derive it from `assembled_prompt`; it must not become a second editable source of truth.
+Keep `prompt` as a compatibility alias containing the exact assembled prompt used by existing controller and archive paths. New code must derive it from `assembled_prompt`; it must not become a second editable source of truth.
 
 The persisted lifecycle states become `EMPTY`, `DRAFT`, `ACCEPTED`, and `FAILED`. `FAILED` means an empty card has no usable artifact after generation failed. A failed retry retains its previous `DRAFT` artifact and records the failed operation in `last_operation`/`last_error` instead of discarding the usable draft.
 
@@ -69,17 +69,16 @@ Add `longcaster/prompt_sections.py` as the sole owner of:
 - prompt hashing and section/provenance validation;
 - default append inheritance and copy operations.
 
-`assemble_prompt()` emits each section once in the order above, using consistent XML-style tags:
+`assemble_prompt()` emits each section once in the order above, using MiniMax H3's plain labels:
 
 ```text
-<subject_definitions>
+subject_definitions:
 {exact section text}
-</subject_definitions>
 
 ...
 ```
 
-Wrapper tags and separators are canonical; the text between wrappers is not trimmed, normalized, expanded, or rewritten. The returned string feeds the existing generation recipe and then the existing runtime anchor-reinforcement step. Anchor instructions remain runtime additions to `effective_prompt`; they do not mutate the saved user sections or `assembled_prompt`.
+Plain `section_name:` headings and separators are canonical; section text is not normalized, expanded, or rewritten. The returned string feeds the existing generation recipe and then the existing runtime anchor-reinforcement step. Anchor instructions remain runtime additions to `effective_prompt`; they do not mutate the saved user sections or `assembled_prompt`.
 
 ## Default append behavior
 
@@ -96,9 +95,9 @@ It starts `summary` and `detailed_description` empty. Preferences for different 
 
 Schema 1–5 manifests migrate atomically under the existing project lock. MMH3 files and accepted hashes are never changed.
 
-- If the legacy `prompt` contains one unambiguous instance of all six recognized tags, extract their inner text exactly, mark the card `structured_v1`, set `assembled_prompt` to a canonical reassembly, and compute its hash.
+- If the legacy `prompt` contains one unambiguous instance of all six obsolete XML wrappers, extract their inner text for migration, mark the card `structured_v1`, reassemble it with plain headings, and compute its hash.
 - Otherwise retain the original `prompt` byte-for-byte, mark it `legacy_flat`, and present it in a clearly labelled legacy editor/import view. Do not silently wrap or reinterpret it during migration.
-- The first explicit conversion places the legacy text in a user-selected section (default `detailed_description`) or lets the user distribute it manually. Only that confirmed action switches to `structured_v1`.
+- The first explicit conversion assigns one ordered, unambiguous set of canonical `section_name:` headings to the matching sections. If that safe split is unavailable, it places the full legacy text in `detailed_description`. Only that confirmed action switches to `structured_v1` and removes the historical flat-prompt panel.
 - Populate `timeline_predecessor_id` from the prior timeline entry for existing linear projects and keep the existing `generation_parent_id` unchanged.
 - Derive initial continuation/reference/publication summaries from current card fields and `recipe` where available; missing historical diagnostics stay null/unknown rather than being invented.
 
@@ -108,7 +107,7 @@ Generation of an untouched `legacy_flat` card continues to use its exact legacy 
 
 Extend the existing ComfyUI web extension with a full-size Cards workspace launched from the LongCaster project node. It remains tied to the current workflow node for queued sampling, while ordinary project/card reading and editing use lightweight server routes and do not load models.
 
-The MVP layout contains:
+The expanded layout contains:
 
 - a project selector and card list with card number, UUID, status, prompt/title excerpt, and preview thumbnail;
 - previous/next card navigation and an obvious active-card marker;
@@ -118,6 +117,13 @@ The MVP layout contains:
 - duration, seed, fixed generation mode, continuation strategy, ancestry, active anchors, and reference summary;
 - card preview video when registered;
 - state-aware Generate, Retry, Accept, and Append actions.
+- project creation and validated project-folder selection under the ComfyUI output root;
+- identity history with readable source-card/frame labels and active binding controls;
+- prompt-style media numbering for recorded MMH3 resources plus navigation to the connected reference graph;
+- an accepted-card preview rebuild action through the connected identity node and Video VAE;
+- side-by-side full-prompt and selected-section views with synchronized section positioning;
+- explicit automatic conversion of complete canonical `section_name:` flat prompts.
+- full-prompt paste/import for editable cards, with complete or partial canonical headings assigned to their sections and unlabelled text retained in `detailed_description`.
 
 Edits autosave through revision-checked API calls after a short debounce and flush before generation. A dirty indicator remains visible until acknowledged. Closing, navigating, or queueing while a save failed produces an explicit warning. Keyboard focus and tab order make all six sections reachable without closing the workspace.
 
@@ -146,7 +152,7 @@ Card inspection/navigation is client-side state and does not mutate `active_card
 | `longcaster/routes.py` | Cards project/read/edit/copy/navigation/preview endpoints and conflict responses. |
 | `nodes.py` | Consume the persisted assembled prompt for generation; return richer Cards state; preserve current sampling, anchors, recipes, and action semantics. |
 | `web/longcaster.js` | Cards workspace, six-section navigation, autosave/conflict handling, preview/status/reference panels, and existing action queue integration. |
-| `docs/project-format.md` | Document schema 6 after implementation lands. |
+| `docs/project-format.md` | Document the current project schema after implementation lands. |
 | `README.md` and `docs/implementation-notes.md` | Usage, limitations, and validation sequence after implementation lands. |
 | `tests/test_prompt_sections.py` | Exact assembly, parsing, hashing, provenance, inheritance, Unicode, whitespace, and invalid input tests. |
 | `tests/test_project.py` | Migration, revision conflicts, lifecycle, ancestry, accepted immutability, and structured edit/copy tests. |

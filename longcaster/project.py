@@ -19,6 +19,7 @@ from .prompt_sections import (
     edit_sections,
     empty_prompt_sections,
     hash_prompt,
+    imported_prompt_sections,
     inherited_prompt_sections,
     prompt_fields,
     section_record,
@@ -26,9 +27,11 @@ from .prompt_sections import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
+GENERATION_MODES = {"ref2va", "t2va"}
+CONTINUATION_STRATEGIES = {"independent", "direct_mmh3"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -194,6 +197,14 @@ class ProjectStore:
         height: int,
         generation_mode: str,
     ) -> dict[str, Any]:
+        if generation_mode not in GENERATION_MODES:
+            raise ProjectError("generation_mode must be ref2va or t2va")
+        width = int(width)
+        height = int(height)
+        if not 32 <= width <= 8192 or not 32 <= height <= 8192:
+            raise ProjectError("project width and height must be between 32 and 8192")
+        if width % 32 or height % 32:
+            raise ProjectError("project width and height must be multiples of 32")
         with self.locked():
             if self.manifest_path.exists():
                 return self._load_unlocked()
@@ -217,8 +228,8 @@ class ProjectStore:
                 "created_at": now,
                 "updated_at": now,
                 "generation_mode": generation_mode,
-                "width": int(width),
-                "height": int(height),
+                "width": width,
+                "height": height,
                 "active_card_id": first["id"],
                 "cards": [first],
                 "active_identity_anchors": {},
@@ -652,6 +663,44 @@ class ProjectStore:
             self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
+    def bind_identity_anchor(
+        self, *, subject_id: str, anchor_id: str, expected_revision: int
+    ) -> dict[str, Any]:
+        """Make an existing historical identity anchor active for its subject."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot change an identity anchor while generation is pending")
+            subject = str(subject_id).strip()
+            if not subject:
+                raise ProjectError("subject_id cannot be empty")
+            anchor = next(
+                (
+                    item
+                    for card in manifest["cards"]
+                    for item in card.get("anchors", [])
+                    if item.get("anchor_id") == anchor_id and item.get("role") == "identity"
+                ),
+                None,
+            )
+            if anchor is None:
+                raise ProjectError("identity anchor does not exist")
+            if anchor.get("subject_id") != subject:
+                raise ProjectError("identity anchor belongs to a different subject")
+            anchor["enabled"] = True
+            manifest.setdefault("active_identity_anchors", {})[subject] = anchor_id
+            manifest["last_operation"] = {
+                "id": str(uuid.uuid4()),
+                "kind": "bind_identity_anchor",
+                "status": "complete",
+                "anchor_id": anchor_id,
+                "subject_id": subject,
+                "ended_at": utc_now(),
+            }
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
     def clear_identity_anchor(self, subject_id: str) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -715,7 +764,9 @@ class ProjectStore:
         clear_sections: list[str] | None = None,
         duration_seconds: float | None = None,
         seed: int | None = None,
+        continuation_strategy: str | None = None,
         convert_legacy: bool = False,
+        import_prompt: str | None = None,
     ) -> dict[str, Any]:
         """Autosave editable card inputs with optimistic revision protection."""
         with self.locked():
@@ -730,16 +781,24 @@ class ProjectStore:
                 raise ProjectError("accepted cards are read-only")
 
             previous_inputs = (
-                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed")
+                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
+                card.get("continuation_strategy"),
             )
 
             changes = section_changes or {}
             clears = clear_sections or []
             try:
-                if convert_legacy:
+                if convert_legacy and import_prompt is not None:
+                    raise ProjectError("convert_legacy and import_prompt cannot be used together")
+                if import_prompt is not None:
+                    sections = imported_prompt_sections(import_prompt)
+                    card["prompt_format"] = "structured_v1"
+                elif convert_legacy:
                     if card.get("prompt_format") != "legacy_flat":
                         raise ProjectError("card prompt is already structured")
-                    sections = edit_sections(empty_prompt_sections(), changes)
+                    sections = imported_prompt_sections(card.get("assembled_prompt", ""))
+                    if changes:
+                        sections = edit_sections(sections, changes)
                     card["prompt_format"] = "structured_v1"
                 elif changes or clears:
                     if card.get("prompt_format") != "structured_v1":
@@ -779,12 +838,56 @@ class ProjectStore:
                 if value < 0 or value > 0xFFFFFFFFFFFFFFFF:
                     raise ProjectError("seed is outside the supported range")
                 card["seed"] = value
+            if continuation_strategy is not None:
+                strategy = str(continuation_strategy)
+                if strategy not in CONTINUATION_STRATEGIES:
+                    raise ProjectError("continuation_strategy must be independent or direct_mmh3")
+                if strategy == "direct_mmh3":
+                    predecessor_id = card.get("timeline_predecessor_id")
+                    if predecessor_id is None:
+                        raise ProjectError("the first card must use independent generation")
+                    predecessor = self._card(manifest, predecessor_id)
+                    if predecessor.get("status") != "ACCEPTED":
+                        raise ProjectError("direct MMH3 continuation requires an accepted predecessor")
+                    card["generation_parent_id"] = predecessor_id
+                else:
+                    card["generation_parent_id"] = None
+                card["continuation_strategy"] = strategy
             if card["status"] == "DRAFT" and previous_inputs != (
-                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed")
+                card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
+                card.get("continuation_strategy"),
             ):
                 card["draft_inputs_dirty"] = True
             card["updated_at"] = utc_now()
             self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def update_project_settings(
+        self, *, expected_revision: int, generation_mode: str
+    ) -> dict[str, Any]:
+        """Change fixed project settings only before the first generation starts."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if generation_mode not in GENERATION_MODES:
+                raise ProjectError("generation_mode must be ref2va or t2va")
+            pristine = (
+                len(manifest["cards"]) == 1
+                and manifest["cards"][0]["status"] in {"EMPTY", "FAILED"}
+                and not manifest["cards"][0].get("artifact_sha256")
+                and not manifest.get("pending_operation")
+            )
+            if not pristine and generation_mode != manifest["generation_mode"]:
+                raise ProjectError("generation mode is locked after the first generation")
+            if generation_mode != manifest["generation_mode"]:
+                manifest["generation_mode"] = generation_mode
+                manifest["last_operation"] = {
+                    "id": str(uuid.uuid4()),
+                    "kind": "update_project_settings",
+                    "status": "complete",
+                    "ended_at": utc_now(),
+                }
+                self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
     def copy_card_sections(
@@ -986,6 +1089,8 @@ class ProjectStore:
             raise ProjectError(f"unsupported project schema: {manifest.get('schema_version')}")
         if manifest.get("project_name") != self.project_name:
             raise ProjectError("project manifest name does not match its directory")
+        if manifest.get("generation_mode") not in GENERATION_MODES:
+            raise ProjectError("project generation_mode must be ref2va or t2va")
         cards = manifest.get("cards")
         if not isinstance(cards, list) or not cards:
             raise ProjectError("project must contain at least one card")
@@ -1031,8 +1136,12 @@ class ProjectStore:
                 raise ProjectError("structured card assembled_prompt is stale")
             if card.get("prompt_hash") != hash_prompt(assembled):
                 raise ProjectError("card prompt_hash does not match assembled_prompt")
-            if card.get("continuation_strategy") not in {"independent", "direct_mmh3"}:
+            if card.get("continuation_strategy") not in CONTINUATION_STRATEGIES:
                 raise ProjectError("card has an invalid continuation_strategy")
+            if card.get("continuation_strategy") == "independent" and parent_id is not None:
+                raise ProjectError("independent cards cannot have a generation parent")
+            if card.get("continuation_strategy") == "direct_mmh3" and parent_id is None:
+                raise ProjectError("direct MMH3 continuation requires a generation parent")
             if card.get("reference_set") is not None and not isinstance(card.get("reference_set"), dict):
                 raise ProjectError("card reference_set must be an object or null")
             if not isinstance(card.get("draft_inputs_dirty"), bool):
@@ -1147,7 +1256,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5}:
+        if version not in {1, 2, 3, 4, 5, 6}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         for card in manifest.get("cards", []):
@@ -1157,6 +1266,13 @@ class ProjectStore:
             fields = prompt_fields(card.get("prompt", ""))
             for key, value in fields.items():
                 card.setdefault(key, value)
+            if card.get("prompt_format") == "structured_v1":
+                old_assembled = card.get("assembled_prompt", "")
+                assembled = assemble_prompt(card["prompt_sections"])
+                card["assembled_prompt"] = assembled
+                card["prompt_hash"] = hash_prompt(assembled)
+                if old_assembled != assembled and card.get("status") == "DRAFT":
+                    card["draft_inputs_dirty"] = True
             card["prompt"] = card["assembled_prompt"]
             card.setdefault(
                 "continuation_strategy",

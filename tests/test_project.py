@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from longcaster.fingerprint import generation_fingerprint
 from longcaster.project import ProjectError, ProjectStore, sha256_file
-from longcaster.prompt_sections import assemble_prompt, edit_sections, empty_prompt_sections
+from longcaster.prompt_sections import assemble_prompt, edit_sections, empty_prompt_sections, hash_prompt
 
 
 class ProjectStoreTests(unittest.TestCase):
@@ -65,6 +65,18 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(current["status"], "EMPTY")
         self.assertEqual(current["generation_parent_id"], accepted["id"])
         self.assertEqual(current["timeline_predecessor_id"], accepted["id"])
+
+    def test_new_project_dimensions_must_be_multiples_of_32(self):
+        store = ProjectStore(self.root, "invalid_resolution")
+        with self.assertRaisesRegex(ProjectError, "multiples of 32"):
+            store.create(
+                prompt="",
+                duration_seconds=5.0,
+                seed=1,
+                width=833,
+                height=480,
+                generation_mode="ref2va",
+            )
 
     def test_unpublish_tail_preserves_master_and_allows_retry(self):
         self._draft(body=b"published version")
@@ -163,7 +175,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -188,7 +200,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -199,7 +211,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -243,6 +255,11 @@ class ProjectStoreTests(unittest.TestCase):
         manifest = restarted.clear_identity_anchor("<Subject 1>")
         self.assertIsNone(restarted.active_identity_anchor(manifest, include_disabled=True))
         self.assertTrue(anchor_path.is_file())
+        manifest = restarted.bind_identity_anchor(
+            subject_id="<Subject 1>", anchor_id=anchor_id,
+            expected_revision=manifest["revision"],
+        )
+        self.assertEqual(restarted.active_identity_anchor(manifest)["anchor_id"], anchor_id)
 
     def test_identity_anchor_rejects_unaccepted_source(self):
         card = self.store.active_card(self._draft())
@@ -281,7 +298,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -478,11 +495,36 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 6)
+        self.assertEqual(migrated["schema_version"], 7)
         self.assertEqual(card["prompt_format"], "legacy_flat")
         self.assertEqual(card["prompt"], original)
         self.assertEqual(card["assembled_prompt"], original)
         self.assertIsNone(card["timeline_predecessor_id"])
+
+    def test_schema_six_structured_xml_assembly_migrates_to_plain_labels(self):
+        store = ProjectStore(self.root, "schema_six_prompt")
+        manifest = store.create(
+            prompt="", duration_seconds=5, seed=1, width=544, height=960,
+            generation_mode="ref2va",
+        )
+        document = json.loads(store.manifest_path.read_text(encoding="utf-8"))
+        document["schema_version"] = 6
+        card = document["cards"][0]
+        card["prompt_sections"]["summary"]["text"] = "A player enters the court."
+        xml = "\n\n".join(
+            f"<{name}>\n{card['prompt_sections'][name]['text']}\n</{name}>"
+            for name in card["prompt_sections"]
+        )
+        card["prompt"] = card["assembled_prompt"] = xml
+        card["prompt_hash"] = hash_prompt(xml)
+        store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
+
+        migrated = store.load()
+        card = store.active_card(migrated)
+        self.assertEqual(migrated["schema_version"], 7)
+        self.assertIn("summary:\nA player enters the court.", card["assembled_prompt"])
+        self.assertNotIn("<summary>", card["assembled_prompt"])
+        self.assertEqual(card["prompt"], card["assembled_prompt"])
 
     def test_new_project_with_empty_prompt_starts_structured(self):
         store = ProjectStore(self.root, "empty_prompt_project")
@@ -493,6 +535,79 @@ class ProjectStoreTests(unittest.TestCase):
         card = store.active_card(manifest)
         self.assertEqual(card["prompt_format"], "structured_v1")
         self.assertEqual(card["prompt"], assemble_prompt(empty_prompt_sections()))
+
+    def test_project_mode_changes_only_before_first_render(self):
+        manifest = self.store.update_project_settings(
+            expected_revision=self.manifest["revision"], generation_mode="t2va",
+        )
+        self.assertEqual(manifest["generation_mode"], "t2va")
+        self._draft()
+        manifest = self.store.load()
+        with self.assertRaisesRegex(ProjectError, "mode is locked"):
+            self.store.update_project_settings(
+                expected_revision=manifest["revision"], generation_mode="ref2va",
+            )
+
+    def test_continuation_strategy_updates_generation_parent(self):
+        self._draft()
+        manifest = self.store.accept()
+        accepted = self.store.active_card(manifest)
+        manifest = self.store.append(prompt="", duration_seconds=5, seed=12)
+        card = self.store.active_card(manifest)
+        manifest = self.store.update_card_editor(
+            card_id=card["id"], expected_revision=manifest["revision"],
+            continuation_strategy="independent",
+        )
+        independent = self.store.active_card(manifest)
+        self.assertEqual(independent["continuation_strategy"], "independent")
+        self.assertIsNone(independent["generation_parent_id"])
+        manifest = self.store.update_card_editor(
+            card_id=card["id"], expected_revision=manifest["revision"],
+            continuation_strategy="direct_mmh3",
+        )
+        continued = self.store.active_card(manifest)
+        self.assertEqual(continued["generation_parent_id"], accepted["id"])
+
+    def test_labeled_flat_prompt_conversion_assigns_all_sections(self):
+        prompt = "\n\n".join(
+            f"{name}:\n{name} from swim04" for name in (
+                "subject_definitions", "summary", "retention_analysis",
+                "detailed_description", "overall_soundscape", "non_diegetic_music",
+            )
+        )
+        store = ProjectStore(self.root, "swim04_conversion")
+        manifest = store.create(
+            prompt=prompt, duration_seconds=10, seed=7, width=544, height=960,
+            generation_mode="ref2va",
+        )
+        card = store.active_card(manifest)
+        self.assertEqual(card["prompt_format"], "legacy_flat")
+        manifest = store.update_card_editor(
+            card_id=card["id"], expected_revision=manifest["revision"],
+            convert_legacy=True,
+        )
+        converted = store.active_card(manifest)
+        self.assertEqual(converted["prompt_format"], "structured_v1")
+        self.assertEqual(converted["prompt_sections"]["summary"]["text"], "summary from swim04")
+        self.assertEqual(converted["assembled_prompt"], prompt)
+
+    def test_full_prompt_import_replaces_structured_sections(self):
+        store = ProjectStore(self.root, "prompt_import")
+        manifest = store.create(
+            prompt="", duration_seconds=5, seed=7, width=544, height=960,
+            generation_mode="ref2va",
+        )
+        card = store.active_card(manifest)
+        manifest = store.update_card_editor(
+            card_id=card["id"], expected_revision=manifest["revision"],
+            import_prompt="Summary:\nImported summary\n\nOverall Soundscape:\nPool ambience",
+        )
+        imported = store.active_card(manifest)
+        self.assertEqual(imported["prompt_format"], "structured_v1")
+        self.assertEqual(imported["prompt_sections"]["summary"]["text"], "Imported summary")
+        self.assertEqual(
+            imported["prompt_sections"]["overall_soundscape"]["text"], "Pool ambience"
+        )
 
     def test_structured_card_autosave_tracks_revision_and_copy_provenance(self):
         sections = edit_sections(empty_prompt_sections(), {

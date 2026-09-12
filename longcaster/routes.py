@@ -60,6 +60,9 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
     if not title and card.get("prompt_format") == "legacy_flat":
         title = next((line.strip() for line in card.get("prompt", "").splitlines() if line.strip()), "")
     anchors = card.get("anchors") or []
+    current_state = next(
+        (item for item in reversed(anchors) if item.get("role") == "current_state"), None
+    )
     return {
         "id": card["id"],
         "timeline_index": card["timeline_index"],
@@ -80,10 +83,8 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "accepted_publication_id": card.get("accepted_publication_id"),
         "draft_inputs_dirty": card.get("draft_inputs_dirty", False),
         "preview_available": bool((card.get("preview") or {}).get("asset_path")),
-        "current_state_anchor_id": next(
-            (item.get("anchor_id") for item in reversed(anchors) if item.get("role") == "current_state"),
-            None,
-        ),
+        "current_state_anchor_id": current_state.get("anchor_id") if current_state else None,
+        "current_state_anchor": current_state,
         "identity_anchor_ids": [
             item.get("anchor_id") for item in anchors if item.get("role") == "identity"
         ],
@@ -92,6 +93,37 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "accepted_at": card.get("accepted_at"),
         "last_error": card.get("last_error"),
     }
+
+
+def _identity_anchors(store: ProjectStore, manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    bindings = manifest.get("active_identity_anchors", {})
+    active_by_anchor: dict[str, list[str]] = {}
+    for subject_id, anchor_id in bindings.items():
+        active_by_anchor.setdefault(anchor_id, []).append(subject_id)
+    identities = []
+    for card in manifest["cards"]:
+        for anchor in card.get("anchors", []):
+            if anchor.get("role") != "identity":
+                continue
+            identities.append({
+                "anchor_id": anchor["anchor_id"],
+                "subject_id": anchor.get("subject_id"),
+                "label": anchor.get("label") or "Identity checkpoint",
+                "enabled": anchor.get("enabled", True),
+                "identity_scope": anchor.get("identity_scope", "face_only"),
+                "custom_identity_instruction": anchor.get("custom_identity_instruction"),
+                "source_card_id": card["id"],
+                "source_card_number": card["timeline_index"] + 1,
+                "source_artifact_number": card["artifact_number"],
+                "source_preview_frame_index": anchor.get("source_preview_frame_index"),
+                "source_timestamp_seconds": anchor.get("source_preview_timestamp_seconds"),
+                "active_for": active_by_anchor.get(anchor["anchor_id"], []),
+                "asset_available": bool(
+                    anchor.get("asset_path")
+                    and store.absolute_path(anchor["asset_path"]).is_file()
+                ),
+            })
+    return identities
 
 
 def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "Project loaded.") -> dict[str, Any]:
@@ -109,6 +141,15 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
             key: pending.get(key) for key in ("id", "kind", "status", "card_id", "started_at")
         } if pending else None),
         "active_identity_anchor": identity,
+        "active_identity_anchors": manifest.get("active_identity_anchors", {}),
+        "identity_anchors": _identity_anchors(store, manifest),
+        "generation_mode_editable": (
+            len(manifest["cards"]) == 1
+            and manifest["cards"][0]["status"] in {"EMPTY", "FAILED"}
+            and not manifest["cards"][0].get("artifact_sha256")
+            and not manifest.get("pending_operation")
+        ),
+        "project_folder": f"output/longcaster_projects/{manifest['project_name']}",
         "cards": [_card_summary(card) for card in manifest["cards"]],
     }
 
@@ -133,10 +174,43 @@ async def list_cards_projects(_request: web.Request) -> web.Response:
                     "generation_mode": manifest["generation_mode"],
                     "card_count": len(manifest["cards"]),
                     "active_card_id": manifest["active_card_id"],
+                    "folder": f"output/longcaster_projects/{manifest['project_name']}",
                 })
             except (OSError, ValueError, ProjectError):
                 continue
     return web.json_response({"projects": projects})
+
+
+async def create_cards_project(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        if store.manifest_path.exists():
+            raise ProjectError("a project with this name already exists")
+        manifest = store.create(
+            prompt="",
+            duration_seconds=float(payload.get("duration_seconds", 5.0)),
+            seed=int(payload.get("seed", 0)),
+            width=int(payload.get("width", 544)),
+            height=int(payload.get("height", 960)),
+            generation_mode=str(payload.get("generation_mode", "ref2va")),
+        )
+        return web.json_response(_cards_state(store, manifest, "Project created."), status=201)
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def update_cards_project(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.update_project_settings(
+            expected_revision=int(payload.get("revision", -1)),
+            generation_mode=str(payload.get("generation_mode", "")),
+        )
+        return web.json_response(_cards_state(store, manifest, "Project settings saved."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
 
 
 async def get_cards_state(request: web.Request) -> web.Response:
@@ -164,7 +238,9 @@ async def update_cards_card(request: web.Request) -> web.Response:
             clear_sections=[str(item) for item in clears],
             duration_seconds=payload.get("duration_seconds"),
             seed=payload.get("seed"),
+            continuation_strategy=payload.get("continuation_strategy"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
+            import_prompt=payload.get("import_prompt"),
         )
         return web.json_response(_cards_state(store, manifest, "Card saved."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
@@ -204,6 +280,59 @@ async def get_cards_preview(request: web.Request) -> web.StreamResponse:
         return web.FileResponse(path)
     except (OSError, ValueError, ProjectError) as exc:
         return _error_response(exc, not_found=True)
+
+
+async def get_anchor_asset(request: web.Request) -> web.StreamResponse:
+    try:
+        store = ProjectStore(_projects_root(), request.query.get("project", ""))
+        manifest = store.load()
+        anchor_id = request.query.get("anchor", "")
+        anchor = next(
+            (
+                item
+                for card in manifest["cards"]
+                for item in card.get("anchors", [])
+                if item.get("anchor_id") == anchor_id
+            ),
+            None,
+        )
+        if anchor is None:
+            raise ProjectError("anchor does not exist")
+        path = store.absolute_path(anchor["asset_path"])
+        if not path.is_file():
+            raise ProjectError("anchor image is missing")
+        return web.FileResponse(path)
+    except (OSError, ValueError, ProjectError) as exc:
+        return _error_response(exc, not_found=True)
+
+
+async def manage_identity_anchor(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        subject_id = str(payload.get("subject_id", "<Subject 1>")).strip()
+        action = str(payload.get("action", ""))
+        if action == "bind":
+            manifest = store.bind_identity_anchor(
+                subject_id=subject_id,
+                anchor_id=str(payload.get("anchor_id", "")),
+                expected_revision=int(payload.get("revision", -1)),
+            )
+            message = f"Identity checkpoint selected for {subject_id}."
+        elif action == "enable":
+            manifest = store.set_identity_anchor_enabled(subject_id, True)
+            message = f"Identity checkpoint enabled for {subject_id}."
+        elif action == "disable":
+            manifest = store.set_identity_anchor_enabled(subject_id, False)
+            message = f"Identity checkpoint disabled for {subject_id}."
+        elif action == "clear":
+            manifest = store.clear_identity_anchor(subject_id)
+            message = f"Active identity checkpoint cleared for {subject_id}."
+        else:
+            raise ProjectError(f"unsupported identity action: {action!r}")
+        return web.json_response(_cards_state(store, manifest, message))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
 
 
 async def list_identity_projects(_request: web.Request) -> web.Response:
@@ -288,9 +417,13 @@ def register_routes() -> bool:
     instance.routes.get("/longcaster/identity/preview")(get_identity_preview)
     instance.routes.post("/longcaster/identity/control")(control_identity_anchor)
     instance.routes.get("/longcaster/cards/projects")(list_cards_projects)
+    instance.routes.post("/longcaster/cards/projects")(create_cards_project)
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
+    instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
     instance.routes.post("/longcaster/cards/copy")(copy_cards_sections)
     instance.routes.get("/longcaster/cards/preview")(get_cards_preview)
+    instance.routes.get("/longcaster/cards/anchor")(get_anchor_asset)
+    instance.routes.post("/longcaster/cards/identity")(manage_identity_anchor)
     _REGISTERED = True
     return True
