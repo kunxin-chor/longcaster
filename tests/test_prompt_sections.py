@@ -9,6 +9,7 @@ from longcaster.prompt_sections import (
     hash_prompt,
     inherited_prompt_sections,
     imported_prompt_sections,
+    inject_lora_activation_words,
     parse_labeled_prompt,
     parse_legacy_prompt,
     prompt_fields,
@@ -18,6 +19,16 @@ from longcaster.prompt_sections import (
 
 
 class PromptSectionTests(unittest.TestCase):
+    def test_project_lora_words_are_injected_without_changing_saved_prompt(self):
+        prompt = assemble_prompt(empty_prompt_sections())
+        injected = inject_lora_activation_words(prompt, "  ohwxPerson, filmStyle  ")
+        self.assertTrue(injected.startswith("subject_definitions:\nohwxPerson, filmStyle\n"))
+        self.assertEqual(inject_lora_activation_words(prompt, "   "), prompt)
+        self.assertEqual(
+            inject_lora_activation_words("legacy prompt", "triggerWord"),
+            "triggerWord\n\nlegacy prompt",
+        )
+
     def test_assembly_is_ordered_deterministic_and_preserves_text(self):
         sections = empty_prompt_sections()
         values = {

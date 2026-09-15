@@ -38,6 +38,8 @@ Do not add an image-alignment instruction before these sections. Do not use firs
 
 Return only the six authored sections. Do not add LongCaster's internal anchor instructions yourself and do not invent a reference label for an internal anchor.
 
+If the project has **Project LoRA Activation Words**, LongCaster injects that exact text immediately after the `subject_definitions:` heading at generation time. Do not repeat those activation words in the authored sections unless the user explicitly needs the same words as ordinary prompt content.
+
 When a card uses **Continue previous card (direct MMH3)**, LongCaster supplies the final 39 joint video/audio latent frames from the accepted parent as protected context. At 24 fps this is 1.625 seconds of hidden handover context. LongCaster removes those repeated frames from normal visible playback and timeline export. The requested card duration therefore means newly visible timeline duration.
 
 When `auto_state_anchor=true`, LongCaster also applies the accepted parent's final decoded frame at handover frame 38 through its native keyframe-guide path. When `reinforce_state_prompt=true`, it creates a runtime-only `effective_prompt` and automatically inserts this exact sentence into `summary` and `retention_analysis`:

@@ -249,3 +249,42 @@ def pack_and_save_card(
     verified = api.load_archive(final_path, verify="full")
     primary_latent(verified)
     return saved, final_path
+
+
+def pack_and_save_refine_derivative(
+    *,
+    path: str | Path,
+    latent: dict[str, Any],
+    card_metadata: dict[str, Any],
+    derivative_metadata: dict[str, Any],
+    process_info: dict[str, Any],
+    mode: str,
+    name: str,
+) -> tuple[Any, str]:
+    """Persist a rebuildable refine derivative without touching its source master."""
+    api = mmh3_api()
+    clean_latent = {key: value for key, value in latent.items() if key != "noise_mask"}
+    packet = api.MMH3Media.create(
+        name=name,
+        generation={
+            "task": mode,
+            "prompt": card_metadata.get("prompt", ""),
+            "seed": derivative_metadata.get("seed"),
+            "frames": card_metadata.get("generated_frame_count"),
+        },
+    )
+    packet = packet.set_extension_value("longcaster", "card", card_metadata)
+    packet = packet.set_extension_value("longcaster", "derivative", derivative_metadata)
+    packed = api.pack_h3_result(
+        packet,
+        latent=clean_latent,
+        operation="longcaster_refine_derivative",
+        mode=mode,
+        status="draft",
+        process_info=process_info,
+        latent_origin="sampler_output",
+    )
+    saved, final_path = api.save_archive(packed.packet, str(Path(path).resolve()))
+    verified = api.load_archive(final_path, verify="full")
+    primary_latent(verified)
+    return saved, final_path

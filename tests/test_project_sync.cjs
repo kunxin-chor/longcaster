@@ -32,10 +32,10 @@ function frontend() {
 
 function projectState(project = "basketball_trial2") {
     return {
-        project, generation_mode: "ref2va", width: 576, height: 576,
+        project, generation_mode: "ref2va", refine_cadence: "manual", width: 576, height: 576,
         active_card_id: "active", cards: [
             { id: "accepted", status: "ACCEPTED", seed: 3, assembled_prompt: "old card" },
-            { id: "active", status: "DRAFT", seed: 42, requested_duration_seconds: 10, assembled_prompt: "current card" },
+            { id: "active", status: "DRAFT", seed: 42, requested_duration_seconds: 10, ref_image_size: "max", assembled_prompt: "current card" },
         ],
     };
 }
@@ -43,7 +43,7 @@ function projectState(project = "basketball_trial2") {
 function projectNode() {
     return {
         type: "LongCasterProject",
-        widgets: ["project_name", "generation_mode", "width", "height", "prompt", "duration_seconds", "seed", "action", "command_id"]
+        widgets: ["project_name", "generation_mode", "refine_cadence", "width", "height", "prompt", "duration_seconds", "seed", "ref_image_size", "action", "command_id"]
             .map((name) => ({ name, value: "stale" })),
         graph: { setDirtyCanvas() {} }, size: [360, 300],
         addWidget() {}, setSize() {},
@@ -51,6 +51,49 @@ function projectNode() {
 }
 
 const value = (node, name) => node.widgets.find((item) => item.name === name).value;
+
+test("Project resolution UI requires full invalidation and warns about render loss", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /To change resolution, invalidate all cards first\./);
+    assert.match(source, /All renders will be lost\./);
+    assert.match(source, /Invalidate All Renders/);
+    assert.match(source, /Duplicate and Invalidate Project/);
+    assert.match(source, /invalidate_renders: invalidateRenders/);
+    assert.match(source, /runAction\("invalidate_all"/);
+});
+
+test("different-seed retry always returns a distinct valid integer", () => {
+    const { context } = frontend();
+    context.crypto = { getRandomValues(values) { values[0] = 42; return values; } };
+    assert.equal(context.differentRandomSeed(42), 43);
+    const seed = context.differentRandomSeed(7);
+    assert.equal(Number.isInteger(seed), true);
+    assert.equal(seed >= 0 && seed <= 0xFFFFFFFF, true);
+    assert.notEqual(seed, 7);
+});
+
+test("prompt diff compares an archived take to the current working prompt", () => {
+    const { context } = frontend();
+    const diff = Array.from(
+        context.promptLineDiff("subject:\nold action\nsound", "subject:\nnew action\nsound\nending"),
+        (entry) => ({...entry}),
+    );
+    assert.deepEqual(diff.map((entry) => entry.kind), ["equal", "delete", "add", "equal", "add"]);
+    assert.equal(diff[1].line, "old action");
+    assert.equal(diff[2].line, "new action");
+    assert.equal(diff[4].line, "ending");
+});
+
+test("Draft Take interface includes the captured generation setup", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Generation Setup/);
+    assert.match(source, /Diffusion models/);
+    assert.match(source, /LoRAs/);
+    assert.match(source, /Patches \/ other MODEL-path nodes/);
+    assert.match(source, /take\.generation_setup/);
+    assert.match(source, /Take Settings \/ Generation Setup/);
+    assert.match(source, /ref_image_size: card\.ref_image_size/);
+});
 
 test("loading a Cards project updates node identity, active card, settings, and status together", () => {
     const { context } = frontend();
@@ -62,11 +105,13 @@ test("loading a Cards project updates node identity, active card, settings, and 
     context.syncProjectNode(node, state);
     assert.equal(value(node, "project_name"), state.project);
     assert.equal(value(node, "generation_mode"), "ref2va");
+    assert.equal(value(node, "refine_cadence"), "manual");
     assert.equal(value(node, "width"), 576);
     assert.equal(value(node, "height"), 576);
     assert.equal(value(node, "prompt"), "current card");
     assert.equal(value(node, "duration_seconds"), 10);
     assert.equal(value(node, "seed"), 42);
+    assert.equal(value(node, "ref_image_size"), "max");
     assert.equal(node.longcasterState.active_card.id, "active");
     assert.equal(node.longcasterState.card_count, 2);
     assert.match(node.title, /basketball_trial2.*DRAFT/);

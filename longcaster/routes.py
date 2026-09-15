@@ -8,7 +8,9 @@ import folder_paths
 from aiohttp import web
 from server import PromptServer
 
+from .duplicate import duplicate_project
 from .project import ProjectError, ProjectStore
+from .provenance import provenance_for_display
 
 
 class _LongCasterWebLogHandler(logging.Handler):
@@ -64,6 +66,15 @@ def _current_preview(card: dict[str, Any]) -> dict[str, Any] | None:
     return preview
 
 
+def _take_preview(take: dict[str, Any]) -> dict[str, Any] | None:
+    preview = take.get("preview") or {}
+    if not preview.get("asset_path"):
+        return None
+    if preview.get("source_artifact_sha256") != take.get("artifact_sha256"):
+        return None
+    return preview
+
+
 def _identity_state(
     store: ProjectStore,
     manifest: dict[str, Any],
@@ -114,11 +125,60 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         (item for item in reversed(anchors) if item.get("role") == "current_state"), None
     )
     preview = _current_preview(card)
+    selected_take_id = card.get("selected_draft_take_id")
+    takes = []
+    for take in card.get("draft_takes", []):
+        take_preview = _take_preview(take)
+        generation_setup = provenance_for_display(take.get("recipe"))
+        takes.append({
+            "id": take.get("id"),
+            "attempt": take.get("attempt"),
+            "seed": take.get("seed"),
+            "ref_image_size": take.get(
+                "ref_image_size", (take.get("recipe") or {}).get("ref_image_size", "match")
+            ),
+            "requested_duration_seconds": take.get("requested_duration_seconds"),
+            "actual_duration_seconds": take.get("actual_duration_seconds"),
+            "prompt_hash": take.get("prompt_hash"),
+            "assembled_prompt": take.get("assembled_prompt", take.get("prompt", "")),
+            "prompt_excerpt": next(
+                (line.strip() for line in str(take.get("assembled_prompt", "")).splitlines() if line.strip()),
+                "",
+            )[:160],
+            "artifact_sha256": take.get("artifact_sha256"),
+            "created_at": take.get("created_at"),
+            "selected": take.get("id") == selected_take_id,
+            "preview_available": take_preview is not None,
+            "preview_version": (
+                take_preview.get("asset_sha256") or take_preview.get("source_artifact_sha256")
+                if take_preview else None
+            ),
+            "generation_setup": generation_setup,
+            "settings": {
+                "canvas": (take.get("recipe") or {}).get("canvas"),
+                "sampler": (take.get("recipe") or {}).get("sampler"),
+                "scheduler": (take.get("recipe") or {}).get("scheduler"),
+                "external_sigmas": (take.get("recipe") or {}).get("external_sigmas"),
+                "sigmas": (take.get("recipe") or {}).get("sigmas"),
+                "ref_image_size": take.get(
+                    "ref_image_size", (take.get("recipe") or {}).get("ref_image_size", "match")
+                ),
+                "lora_activation_words": (take.get("recipe") or {}).get("lora_activation_words"),
+                "continuation_strategy": take.get("continuation_strategy"),
+                "continuation_source": take.get("continuation_source"),
+                "references": take.get("reference_set"),
+            },
+        })
     return {
         "id": card["id"],
         "timeline_index": card["timeline_index"],
         "artifact_number": card["artifact_number"],
         "status": card["status"],
+        "render_validity": (
+            "VALIDATED" if card.get("status") in {"DRAFT", "ACCEPTED"}
+            and card.get("artifact_sha256") else
+            "INVALIDATED" if card.get("status") == "INVALIDATED" else "UNRENDERED"
+        ),
         "title": title[:100],
         "generation_parent_id": card.get("generation_parent_id"),
         "timeline_predecessor_id": card.get("timeline_predecessor_id"),
@@ -128,12 +188,28 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "prompt_hash": card.get("prompt_hash"),
         "requested_duration_seconds": card.get("requested_duration_seconds"),
         "actual_duration_seconds": card.get("actual_duration_seconds"),
+        "actual_new_frame_count": card.get("actual_new_frame_count"),
         "seed": card.get("seed"),
+        "ref_image_size": card.get("ref_image_size", "match"),
         "continuation_strategy": card.get("continuation_strategy"),
+        "continuation_source": card.get("continuation_source"),
+        "continuation_source_preference": card.get(
+            "continuation_source_preference", "accepted_master"
+        ),
+        "refine_enabled": card.get("refine_enabled", False),
+        "continuation_refine": next(
+            (
+                item for item in reversed(card.get("derivatives", []))
+                if item.get("type") == "refine"
+            ),
+            None,
+        ),
         "reference_set": card.get("reference_set"),
         "accepted_publication_id": card.get("accepted_publication_id"),
         "has_publication_history": bool(card.get("publication_history")),
         "draft_inputs_dirty": card.get("draft_inputs_dirty", False),
+        "selected_draft_take_id": selected_take_id,
+        "draft_takes": takes,
         "preview_available": preview is not None,
         "preview_version": (
             preview.get("asset_sha256") or preview.get("source_artifact_sha256")
@@ -190,8 +266,21 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "project": manifest["project_name"],
         "revision": manifest["revision"],
         "generation_mode": manifest["generation_mode"],
+        "refine_cadence": manifest.get("refine_cadence", "off"),
+        "lora_activation_words": manifest.get("lora_activation_words", ""),
         "width": manifest["width"],
         "height": manifest["height"],
+        "resolution_editable": (
+            not manifest.get("pending_operation")
+            and (
+                all(card.get("status") == "INVALIDATED" for card in manifest["cards"])
+                or (
+                    len(manifest["cards"]) == 1
+                    and manifest["cards"][0].get("status") in {"EMPTY", "FAILED"}
+                    and not manifest["cards"][0].get("artifact_sha256")
+                )
+            )
+        ),
         "active_card_id": manifest["active_card_id"],
         "pending_operation": ({
             key: pending.get(key) for key in ("id", "kind", "status", "card_id", "started_at")
@@ -250,8 +339,36 @@ async def create_cards_project(request: web.Request) -> web.Response:
             width=int(payload.get("width", 544)),
             height=int(payload.get("height", 960)),
             generation_mode=str(payload.get("generation_mode", "ref2va")),
+            refine_cadence=str(payload.get("refine_cadence", "off")),
+            lora_activation_words=str(payload.get("lora_activation_words") or ""),
         )
         return web.json_response(_cards_state(store, manifest, "Project created."), status=201)
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def duplicate_cards_project(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        invalidate_renders = payload.get("invalidate_renders", False)
+        if not isinstance(invalidate_renders, bool):
+            raise ProjectError("invalidate_renders must be boolean")
+        manifest = duplicate_project(
+            _projects_root(),
+            str(payload.get("source_project", "")),
+            str(payload.get("project", "")),
+            invalidate_renders=invalidate_renders,
+        )
+        store = ProjectStore(_projects_root(), manifest["project_name"])
+        return web.json_response(
+            _cards_state(
+                store,
+                manifest,
+                "Project duplicated with all renders invalidated."
+                if invalidate_renders else "Project duplicated.",
+            ),
+            status=201,
+        )
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
@@ -263,6 +380,10 @@ async def update_cards_project(request: web.Request) -> web.Response:
         manifest = store.update_project_settings(
             expected_revision=int(payload.get("revision", -1)),
             generation_mode=str(payload.get("generation_mode", "")),
+            refine_cadence=payload.get("refine_cadence"),
+            lora_activation_words=payload.get("lora_activation_words"),
+            width=payload.get("width"),
+            height=payload.get("height"),
         )
         return web.json_response(_cards_state(store, manifest, "Project settings saved."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
@@ -294,7 +415,9 @@ async def update_cards_card(request: web.Request) -> web.Response:
             clear_sections=[str(item) for item in clears],
             duration_seconds=payload.get("duration_seconds"),
             seed=payload.get("seed"),
+            ref_image_size=payload.get("ref_image_size"),
             continuation_strategy=payload.get("continuation_strategy"),
+            refine_enabled=payload.get("refine_enabled"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
             import_prompt=payload.get("import_prompt"),
         )
@@ -326,9 +449,19 @@ async def get_cards_preview(request: web.Request) -> web.StreamResponse:
         store = ProjectStore(_projects_root(), request.query.get("project", ""))
         manifest = store.load()
         card = store.card(manifest, request.query.get("card", ""))
-        preview = _current_preview(card)
+        take_id = request.query.get("take")
+        if take_id:
+            take = next(
+                (item for item in card.get("draft_takes", []) if item.get("id") == take_id),
+                None,
+            )
+            if take is None:
+                raise ProjectError("draft take does not exist")
+            preview = _take_preview(take)
+        else:
+            preview = _current_preview(card)
         if preview is None:
-            raise ProjectError("this card has no preview for its current artifact")
+            raise ProjectError("this draft take has no preview")
         asset_path = preview["asset_path"]
         path = store.absolute_path(asset_path)
         if not path.is_file():
@@ -362,6 +495,37 @@ async def get_anchor_asset(request: web.Request) -> web.StreamResponse:
         return _error_response(exc, not_found=True)
 
 
+async def manage_draft_take(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        action = str(payload.get("action", ""))
+        common = {
+            "card_id": str(payload.get("card_id", "")),
+            "expected_revision": int(payload.get("revision", -1)),
+        }
+        if action == "select":
+            manifest = store.select_draft_take(
+                take_id=str(payload.get("take_id", "")), **common
+            )
+            message = "Draft take selected."
+        elif action == "delete":
+            manifest = store.delete_draft_take(
+                take_id=str(payload.get("take_id", "")), **common
+            )
+            message = "Draft take deleted."
+        elif action == "delete_unselected":
+            manifest = store.delete_draft_take(
+                take_id=None, delete_unselected=True, **common
+            )
+            message = "Unselected draft takes deleted."
+        else:
+            raise ProjectError(f"unsupported draft take action: {action!r}")
+        return web.json_response(_cards_state(store, manifest, message))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
 async def manage_identity_anchor(request: web.Request) -> web.Response:
     try:
         payload = await request.json()
@@ -384,9 +548,29 @@ async def manage_identity_anchor(request: web.Request) -> web.Response:
         elif action == "clear":
             manifest = store.clear_identity_anchor(subject_id)
             message = f"Active identity checkpoint cleared for {subject_id}."
+        elif action == "delete":
+            manifest = store.delete_identity_anchor(
+                anchor_id=str(payload.get("anchor_id", "")),
+                expected_revision=int(payload.get("revision", -1)),
+            )
+            message = "Identity checkpoint deleted."
         else:
             raise ProjectError(f"unsupported identity action: {action!r}")
         return web.json_response(_cards_state(store, manifest, message))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def set_cards_continuation_source(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.set_continuation_source_preference(
+            card_id=str(payload.get("card_id", "")),
+            source_type=str(payload.get("source_type", "")),
+            expected_revision=int(payload.get("revision", -1)),
+        )
+        return web.json_response(_cards_state(store, manifest, "Continuation source updated."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
@@ -475,11 +659,14 @@ def register_routes() -> bool:
     instance.routes.post("/longcaster/identity/control")(control_identity_anchor)
     instance.routes.get("/longcaster/cards/projects")(list_cards_projects)
     instance.routes.post("/longcaster/cards/projects")(create_cards_project)
+    instance.routes.post("/longcaster/cards/projects/duplicate")(duplicate_cards_project)
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
     instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
     instance.routes.post("/longcaster/cards/copy")(copy_cards_sections)
+    instance.routes.post("/longcaster/cards/continuation-source")(set_cards_continuation_source)
     instance.routes.get("/longcaster/cards/preview")(get_cards_preview)
+    instance.routes.post("/longcaster/cards/take")(manage_draft_take)
     instance.routes.get("/longcaster/cards/anchor")(get_anchor_asset)
     instance.routes.post("/longcaster/cards/identity")(manage_identity_anchor)
     _REGISTERED = True

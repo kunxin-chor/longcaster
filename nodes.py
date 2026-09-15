@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 import shutil
+import time
 from typing import Any
 import uuid
 
@@ -24,12 +25,20 @@ from .longcaster.h3_runtime import (
 from .longcaster.mmh3_adapter import (
     load_packet,
     pack_and_save_card,
+    pack_and_save_refine_derivative,
     primary_latent,
     reference_snapshot,
 )
 from .longcaster.project import ProjectError, ProjectStore, sha256_file
-from .longcaster.prompt_sections import hash_prompt
+from .longcaster.prompt_sections import hash_prompt, inject_lora_activation_words
 from .longcaster.preview import encode_project_preview
+from .longcaster.provenance import capture_generation_provenance
+from .longcaster.refine import (
+    assert_protected_prefix_unchanged,
+    prepare_refine_latent,
+    refine_seed,
+    should_refine_on_accept,
+)
 from .longcaster.state_anchor import (
     IDENTITY_NATIVE_MECHANISM,
     NATIVE_MECHANISM,
@@ -111,6 +120,31 @@ def _packet_for_card(store: ProjectStore, card: dict[str, Any]) -> tuple[Any | N
     return packet, latent
 
 
+def _packet_for_artifact(
+    store: ProjectStore, *, relative: str, artifact_sha256: str, label: str
+) -> tuple[Any, dict[str, Any]]:
+    path = store.absolute_path(relative)
+    if not path.is_file() or sha256_file(path) != artifact_sha256:
+        raise ProjectError(f"{label} archive is missing or corrupt")
+    packet = load_packet(path, verify="on_access")
+    latent, _ = primary_latent(packet)
+    return packet, latent
+
+
+def _anchor_by_id(manifest: dict[str, Any], anchor_id: str | None) -> dict[str, Any] | None:
+    if not anchor_id:
+        return None
+    return next(
+        (
+            anchor
+            for card in manifest.get("cards", [])
+            for anchor in card.get("anchors", [])
+            if anchor.get("anchor_id") == anchor_id
+        ),
+        None,
+    )
+
+
 class LongCasterProject:
     """Persistent fixed-mode H3 card controller with direct AV continuation."""
 
@@ -125,7 +159,7 @@ class LongCasterProject:
                 "video_vae": ("VAE",),
                 "audio_vae": ("VAE",),
                 "project_name": ("STRING", {"default": "longcaster_project"}),
-                "action": (["resume", "cancel", "generate", "retry", "accept", "unpublish", "remove_draft", "append"], {"default": "resume"}),
+                "action": (["resume", "cancel", "generate", "retry", "accept", "create_refine", "unpublish", "invalidate", "invalidate_all", "remove_draft", "append"], {"default": "resume"}),
                 "generation_mode": (["ref2va", "t2va"], {"default": "ref2va"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": True}),
                 "duration_seconds": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 120.0, "step": 0.1}),
@@ -160,10 +194,22 @@ class LongCasterProject:
                 "auto_state_anchor": ("BOOLEAN", {"default": True}),
                 "reinforce_state_prompt": ("BOOLEAN", {"default": True}),
                 "use_identity_anchor": ("BOOLEAN", {"default": True}),
+                "refine_cadence": (
+                    ["off", "every_accepted_card", "manual"],
+                    {"default": "off"},
+                ),
+                "refine_sampler_name": (comfy.samplers.SAMPLER_NAMES, {"default": "euler"}),
+                "refine_seed_mode": (["inherit", "offset"], {"default": "inherit"}),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
                 "reference_packet": ("MMH3_MEDIA",),
+                "refine_sigmas": ("SIGMAS",),
+                "refine_model": ("MODEL",),
+            },
+            "hidden": {
+                "prompt_graph": "PROMPT",
+                "unique_id": "UNIQUE_ID",
             },
         }
 
@@ -204,8 +250,15 @@ class LongCasterProject:
         auto_state_anchor=True,
         reinforce_state_prompt=True,
         use_identity_anchor=True,
+        refine_cadence="off",
+        refine_sampler_name="euler",
+        refine_seed_mode="inherit",
         sigmas=None,
         reference_packet=None,
+        refine_sigmas=None,
+        refine_model=None,
+        prompt_graph=None,
+        unique_id=None,
     ):
         store = ProjectStore(_projects_root(), project_name)
         if not store.manifest_path.exists():
@@ -216,6 +269,7 @@ class LongCasterProject:
                 width=width,
                 height=height,
                 generation_mode=generation_mode,
+                refine_cadence=refine_cadence,
             )
         else:
             manifest = store.load()
@@ -232,6 +286,7 @@ class LongCasterProject:
             raise ProjectError(
                 f"project mode is fixed at {manifest['generation_mode']}; the node requested {generation_mode}"
             )
+        manifest = store.set_refine_cadence(refine_cadence)
         if action == "resume":
             return self._result(None, None, _status(manifest, store, "Project resumed."), store)
 
@@ -249,12 +304,87 @@ class LongCasterProject:
                     video_vae=video_vae,
                 )
             manifest = store.accept(anchor=anchor)
+            accepted_card = store.active_card(manifest)
+            cadence = manifest.get("refine_cadence", "off")
+            should_refine = should_refine_on_accept(
+                cadence, accepted_card.get("refine_enabled", False)
+            )
+            if should_refine:
+                try:
+                    manifest = self._create_refine(
+                        store=store,
+                        manifest=manifest,
+                        model=refine_model or model,
+                        model_source=("refine_model" if refine_model is not None else "first_pass_model"),
+                        clip=clip,
+                        video_vae=video_vae,
+                        audio_vae=audio_vae,
+                        reference_packet=reference_packet,
+                        ref_image_size=ref_image_size,
+                        refine_sigmas=refine_sigmas,
+                        sampler_name=refine_sampler_name,
+                        seed_mode=refine_seed_mode,
+                        cadence=cadence,
+                        use_as_default=True,
+                    )
+                    message = (
+                        "Draft accepted as an immutable master; continuation refine is ready "
+                        "and selected for the next card."
+                    )
+                except Exception as exc:
+                    LOGGER.exception("LongCaster continuation refine failed after acceptance")
+                    manifest = store.load()
+                    message = (
+                        "Draft accepted as an immutable master, but continuation refine failed; "
+                        f"the accepted master remains the continuation fallback. {exc}"
+                    )
+            else:
+                message = "Draft accepted as an immutable master; current-state anchor saved."
+            manifest, advanced = store.activate_next_invalidated(accepted_card["id"])
+            if advanced:
+                message += " The next invalidated card is now active for regeneration."
             return self._result(
                 None,
                 None,
-                _status(manifest, store, "Draft accepted as an immutable master; current-state anchor saved."),
+                _status(manifest, store, message),
                 store,
             )
+
+        if action == "create_refine":
+            cadence = manifest.get("refine_cadence", "off")
+            if cadence == "off":
+                raise ProjectError("Generate Refine is disabled while continuation refine is Off")
+            accepted_card = store.active_card(manifest)
+            use_as_default = cadence == "every_accepted_card" or bool(
+                accepted_card.get("refine_enabled", False)
+            )
+            try:
+                manifest = self._create_refine(
+                    store=store,
+                    manifest=manifest,
+                    model=refine_model or model,
+                    model_source=("refine_model" if refine_model is not None else "first_pass_model"),
+                    clip=clip,
+                    video_vae=video_vae,
+                    audio_vae=audio_vae,
+                    reference_packet=reference_packet,
+                    ref_image_size=ref_image_size,
+                    refine_sigmas=refine_sigmas,
+                    sampler_name=refine_sampler_name,
+                    seed_mode=refine_seed_mode,
+                    cadence=cadence,
+                    use_as_default=use_as_default,
+                )
+                message = (
+                    "Continuation refine created and selected for continuation."
+                    if use_as_default
+                    else "Continuation refine created; choose it explicitly to use it for continuation."
+                )
+            except Exception as exc:
+                LOGGER.exception("LongCaster manual continuation refine failed")
+                manifest = store.load()
+                message = f"Continuation refine failed; the accepted master remains selected. {exc}"
+            return self._result(None, None, _status(manifest, store, message), store)
 
         if action == "unpublish":
             manifest = store.unpublish_tail()
@@ -264,7 +394,33 @@ class LongCasterProject:
                 _status(
                     manifest,
                     store,
-                    "Latest accepted card reopened as a draft; its prior immutable master was retained in publication history.",
+                    "Latest accepted card reopened as a draft; its prior immutable master was retained and its refine derivatives were removed.",
+                ),
+                store,
+            )
+
+        if action == "invalidate":
+            manifest = store.invalidate_render()
+            return self._result(
+                None,
+                None,
+                _status(
+                    manifest,
+                    store,
+                    "Card render invalidated; its prompt was retained and its associated render artifacts were removed.",
+                ),
+                store,
+            )
+
+        if action == "invalidate_all":
+            manifest = store.invalidate_all_renders()
+            return self._result(
+                None,
+                None,
+                _status(
+                    manifest,
+                    store,
+                    "All card renders were invalidated; prompts were retained and Card 1 is active for regeneration.",
                 ),
                 store,
             )
@@ -304,6 +460,7 @@ class LongCasterProject:
             if current.get("continuation_strategy") == "direct_mmh3"
             else None
         )
+        continuation_source = store.continuation_artifact(manifest, current) if parent else None
         context_frames = H3_CONTINUATION_CONTEXT_FRAMES if parent else 0
         duration = resolve_duration(duration_seconds, context_frames=context_frames)
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)
@@ -378,6 +535,10 @@ class LongCasterProject:
                 identity_scope=identity_anchor.get("identity_scope", "face_only") if identity_anchor else "face_only",
                 custom_identity_instruction=identity_anchor.get("custom_identity_instruction") if identity_anchor else None,
             )
+        lora_activation_words = manifest.get("lora_activation_words", "")
+        effective_prompt = inject_lora_activation_words(
+            effective_prompt, lora_activation_words
+        )
         LOGGER.info(
             "LongCaster anchor prompt reinforcement injected=%s sections=%s",
             prompt_reinforced, ",".join(prompt_sections) or "none",
@@ -423,12 +584,15 @@ class LongCasterProject:
             "prompt_reinforcement_injected": bool(prompt_reinforced and anchor),
             "prompt_sections": prompt_sections,
         }
+        upstream_provenance = capture_generation_provenance(prompt_graph, unique_id)
         recipe = {
             "version": 1,
             "project_mode": generation_mode,
             "prompt": prompt,
             "prompt_hash": hash_prompt(prompt),
             "effective_prompt": effective_prompt,
+            "effective_prompt_hash": hash_prompt(effective_prompt),
+            "lora_activation_words": lora_activation_words,
             "requested_duration_seconds": float(duration_seconds),
             "duration_plan": duration.__dict__,
             "seed": int(seed),
@@ -438,8 +602,13 @@ class LongCasterProject:
             "sigmas": sigma_schedule,
             "external_sigmas": sigmas is not None,
             "model": _model_snapshot(model),
-            "parent_sha256": parent.get("artifact_sha256") if parent else None,
+            "upstream_provenance": upstream_provenance,
+            "parent_sha256": (
+                continuation_source.get("artifact_sha256") if continuation_source else None
+            ),
+            "continuation_source": continuation_source,
             "references": references,
+            "ref_image_size": ref_image_size,
             "state_anchor": anchor_diagnostic,
             "identity_anchor": identity_diagnostic,
             "runtime": runtime_capabilities(),
@@ -471,8 +640,14 @@ class LongCasterProject:
             continuation_plan = None
             target_latent = empty_latent
             if parent:
-                if parent_packet is None:
-                    parent_packet, _ = _packet_for_card(store, parent)
+                if continuation_source is None:
+                    raise ProjectError("direct continuation has no resolved source")
+                parent_packet, _ = _packet_for_artifact(
+                    store,
+                    relative=continuation_source["path"],
+                    artifact_sha256=continuation_source["artifact_sha256"],
+                    label="continuation source",
+                )
                 target_latent, continuation_plan = DIRECT_LATENT_CONTINUATION.prepare(
                     parent_packet,
                     target_frames=duration.generated_frames,
@@ -506,6 +681,7 @@ class LongCasterProject:
                 "generation_parent_id": started_card.get("generation_parent_id"),
                 "timeline_predecessor_id": started_card.get("timeline_predecessor_id"),
                 "continuation_strategy": started_card.get("continuation_strategy"),
+                "continuation_source": continuation_source,
                 "prompt": prompt,
                 "prompt_hash": hash_prompt(prompt),
                 "prompt_sections": started_card.get("prompt_sections") if started_card.get("prompt_format") == "structured_v1" else None,
@@ -554,6 +730,239 @@ class LongCasterProject:
             )
         except Exception as exc:
             store.fail_generation(operation_id, str(exc))
+            destination.unlink(missing_ok=True)
+            raise
+
+    def _create_refine(
+        self,
+        *,
+        store: ProjectStore,
+        manifest: dict[str, Any],
+        model: Any,
+        model_source: str,
+        clip: Any,
+        video_vae: Any,
+        audio_vae: Any,
+        reference_packet: Any | None,
+        ref_image_size: str,
+        refine_sigmas: Any,
+        sampler_name: str,
+        seed_mode: str,
+        cadence: str,
+        use_as_default: bool,
+    ) -> dict[str, Any]:
+        card = store.active_card(manifest)
+        if card.get("status") != "ACCEPTED":
+            raise ProjectError("continuation refine requires the active card to be accepted")
+        first_recipe = card.get("recipe") or {}
+        schedule = []
+        sigma_error = None
+        if refine_sigmas is not None:
+            try:
+                schedule = sigma_values(refine_sigmas)
+            except Exception as exc:
+                sigma_error = exc
+        seed_value = refine_seed(int(card["seed"]), seed_mode)
+        audio_handling = (
+            "joint_av_second_sample_with_reconstructed_audio_prefix_lock"
+            if int(card.get("context_frame_count") or 0) > 0
+            else "joint_av_second_sample_no_inherited_prefix"
+        )
+        refine_recipe = {
+            "version": 1,
+            "passes": 1,
+            "resolution": {
+                "width": int(manifest["width"]),
+                "height": int(manifest["height"]),
+            },
+            "model_source": str(model_source),
+            "model": _model_snapshot(model),
+            "sampler": str(sampler_name),
+            "sigmas": schedule,
+            "sigmas_sha256": generation_fingerprint({"sigmas": schedule}),
+            "steps": max(0, len(schedule) - 1),
+            "schedule": "external_sigmas",
+            "denoise": "encoded_by_external_sigmas",
+            "seed": seed_value,
+            "seed_mode": str(seed_mode),
+            "conditioning": "reconstructed_first_pass",
+            "lora_activation_words": first_recipe.get("lora_activation_words", ""),
+            "audio_handling": audio_handling,
+        }
+        manifest, derivative = store.begin_refine(
+            card_id=card["id"],
+            cadence=cadence,
+            recipe=refine_recipe,
+            use_as_default=use_as_default,
+        )
+        operation_id = manifest["pending_operation"]["id"]
+        destination = store.derivative_destination(card, derivative["id"])
+        started = time.perf_counter()
+        try:
+            if refine_sigmas is None:
+                raise ProjectError(
+                    "refine requires a separate SIGMAS connection; first-pass SIGMAS are not reused implicitly"
+                )
+            if sigma_error is not None:
+                raise ProjectError(f"invalid refine SIGMAS: {sigma_error}")
+            expected_references = (first_recipe.get("references") or {}).get("packet_id")
+            conditioning_packet = reference_packet if manifest["generation_mode"] == "ref2va" else None
+            if manifest["generation_mode"] == "ref2va":
+                if conditioning_packet is None:
+                    raise ProjectError("REF2VA refine requires the original reference_packet connection")
+                observed_references = (reference_snapshot(conditioning_packet) or {}).get("packet_id")
+                if expected_references and observed_references != expected_references:
+                    raise ProjectError(
+                        "connected reference packet does not match the accepted card recipe"
+                    )
+
+            identity_info = first_recipe.get("identity_anchor") or {}
+            identity_anchor = (
+                _anchor_by_id(manifest, identity_info.get("anchor_id"))
+                if identity_info.get("active")
+                else None
+            )
+            if identity_info.get("active") and identity_anchor is None:
+                raise ProjectError("accepted card identity anchor is no longer available")
+            identity_image = load_anchor_image(store, identity_anchor) if identity_anchor else None
+
+            effective_prompt = str(first_recipe.get("effective_prompt") or card.get("prompt", ""))
+            positive, _unused_empty, reference_report = build_conditioning(
+                clip=clip,
+                video_vae=video_vae,
+                audio_vae=audio_vae,
+                prompt=effective_prompt,
+                width=int(manifest["width"]),
+                height=int(manifest["height"]),
+                frames=int(card["generated_frame_count"]),
+                reference_packet=conditioning_packet,
+                ref_image_size=str(first_recipe.get("ref_image_size") or ref_image_size),
+                additional_reference_images=(
+                    {"identity": identity_image} if identity_image is not None else None
+                ),
+            )
+
+            state_info = first_recipe.get("state_anchor") or {}
+            state_anchor = None
+            if state_info.get("active"):
+                state_anchor = _anchor_by_id(manifest, state_info.get("anchor_id"))
+                if state_anchor is None:
+                    raise ProjectError("accepted card state anchor is no longer available")
+
+            accepted_packet, accepted_latent = _packet_for_card(store, card)
+            if accepted_packet is None or accepted_latent is None:
+                raise ProjectError("accepted refine source is unavailable")
+            continuation_lock = None
+            lock_plan = None
+            if int(card.get("context_frame_count") or 0) > 0:
+                source = store.continuation_artifact(manifest, card)
+                if source is None:
+                    raise ProjectError("continued card has no recorded continuation source")
+                source_packet, _ = _packet_for_artifact(
+                    store,
+                    relative=source["path"],
+                    artifact_sha256=source["artifact_sha256"],
+                    label="refine prefix source",
+                )
+                continuation_lock, lock_plan = DIRECT_LATENT_CONTINUATION.prepare(
+                    source_packet,
+                    target_frames=int(card["generated_frame_count"]),
+                    width=int(manifest["width"]),
+                    height=int(manifest["height"]),
+                    context_frames=int(card["context_frame_count"]),
+                )
+
+            refine_input, protection = prepare_refine_latent(
+                accepted_latent, continuation_lock
+            )
+            if state_anchor is not None:
+                positive = apply_native_anchor(
+                    positive=positive,
+                    latent=refine_input,
+                    video_vae=video_vae,
+                    image=load_anchor_image(store, state_anchor),
+                    frame_index=int(state_info["target_frame_index"]),
+                )
+            sampled = sample_h3(
+                model=model,
+                positive=positive,
+                latent=refine_input,
+                sigmas=refine_sigmas,
+                seed=seed_value,
+                sampler_name=str(sampler_name),
+            )
+            assert_protected_prefix_unchanged(refine_input, sampled)
+
+            prefix_report = protection.to_dict()
+            prefix_report["continuation_plan"] = lock_plan
+            derivative_metadata = {
+                "schema_version": 1,
+                "derivative_id": derivative["id"],
+                "type": "refine",
+                "source_card_id": card["id"],
+                "source_master_path": card["master_path"],
+                "source_artifact_sha256": card["artifact_sha256"],
+                "cadence": cadence,
+                "model": refine_recipe["model"],
+                "model_source": refine_recipe["model_source"],
+                "sampler": str(sampler_name),
+                "sigmas_sha256": refine_recipe["sigmas_sha256"],
+                "sigmas": schedule,
+                "steps": refine_recipe["steps"],
+                "seed": seed_value,
+                "seed_mode": str(seed_mode),
+                "resolution": refine_recipe["resolution"],
+                "prefix_protection": prefix_report,
+                "audio_handling": refine_recipe["audio_handling"],
+            }
+            process_info = {
+                "contract": "longcaster_refine_derivative_v1",
+                "source_recipe_fingerprint": card.get("generation_fingerprint"),
+                "refine_recipe_fingerprint": generation_fingerprint(refine_recipe),
+                "reference_resolution": reference_report,
+                "prefix_protection": prefix_report,
+                "audio_handling": refine_recipe["audio_handling"],
+            }
+            card_metadata = {
+                "schema_version": 1,
+                "project_name": manifest["project_name"],
+                "card_id": card["id"],
+                "artifact_number": card["artifact_number"],
+                "timeline_index": card["timeline_index"],
+                "generation_parent_id": card.get("generation_parent_id"),
+                "continuation_source": card.get("continuation_source"),
+                "prompt": card.get("prompt", ""),
+                "prompt_hash": card.get("prompt_hash"),
+                "seed": card.get("seed"),
+                "context_frame_count": card.get("context_frame_count"),
+                "generated_frame_count": card.get("generated_frame_count"),
+                "actual_new_frame_count": card.get("actual_new_frame_count"),
+                "actual_duration_seconds": card.get("actual_duration_seconds"),
+            }
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            _saved_packet, final_path = pack_and_save_refine_derivative(
+                path=destination,
+                latent=sampled,
+                card_metadata=card_metadata,
+                derivative_metadata=derivative_metadata,
+                process_info=process_info,
+                mode=manifest["generation_mode"],
+                name=(
+                    f"{manifest['project_name']} card {card['artifact_number']:04d} "
+                    "continuation refine"
+                ),
+            )
+            derivative_hash = sha256_file(Path(final_path))
+            return store.finish_refine(
+                operation_id=operation_id,
+                derivative_path=final_path,
+                artifact_sha256=derivative_hash,
+                execution_seconds=time.perf_counter() - started,
+                prefix_protection=prefix_report,
+                audio_handling=refine_recipe["audio_handling"],
+            )
+        except Exception as exc:
+            store.fail_refine(operation_id, str(exc))
             destination.unlink(missing_ok=True)
             raise
 

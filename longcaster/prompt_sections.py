@@ -91,6 +91,22 @@ def hash_prompt(prompt: str) -> str:
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
 
+def inject_lora_activation_words(prompt: str, activation_words: str) -> str:
+    """Inject exact project LoRA triggers without mutating saved prompt sections."""
+    words = str(activation_words).strip()
+    if not words:
+        return prompt
+    heading = "subject_definitions:"
+    if prompt.startswith(heading):
+        tail = prompt[len(heading):]
+        if tail.startswith("\r\n"):
+            return f"{heading}\r\n{words}{tail}"
+        if tail.startswith("\n"):
+            return f"{heading}\n{words}{tail}"
+        return f"{heading}\n{words}\n{tail}" if tail else f"{heading}\n{words}"
+    return f"{words}\n\n{prompt}" if prompt else words
+
+
 def _remove_framing_newlines(value: str) -> str:
     opening = "\r\n" if value.startswith("\r\n") else "\n" if value.startswith("\n") else ""
     closing = "\r\n" if value.endswith("\r\n") else "\n" if value.endswith("\n") else ""

@@ -78,6 +78,59 @@ class WebLoggingTests(unittest.TestCase):
         self.assertIs(current["preview_available"], True)
         self.assertEqual(current["preview_version"], "preview-hash")
 
+    def test_card_summary_exposes_latest_refine_and_source_choice(self):
+        card = {
+            "id": "card-id", "timeline_index": 0, "artifact_number": 1,
+            "status": "ACCEPTED", "artifact_sha256": "master-hash",
+            "refine_enabled": True,
+            "continuation_source_preference": "derivative",
+            "derivatives": [
+                {"id": "old", "type": "refine", "status": "FAILED"},
+                {"id": "ready", "type": "refine", "status": "READY"},
+            ],
+        }
+        summary = self.routes._card_summary(card)
+        self.assertEqual(summary["continuation_refine"]["id"], "ready")
+        self.assertEqual(summary["continuation_source_preference"], "derivative")
+        self.assertTrue(summary["refine_enabled"])
+
+    def test_card_summary_exposes_validated_and_invalidated_render_state(self):
+        card = {
+            "id": "card-id", "timeline_index": 0, "artifact_number": 1,
+            "status": "DRAFT", "artifact_sha256": "render-hash",
+        }
+        self.assertEqual(self.routes._card_summary(card)["render_validity"], "VALIDATED")
+        card.update({"status": "INVALIDATED", "artifact_sha256": None})
+        self.assertEqual(self.routes._card_summary(card)["render_validity"], "INVALIDATED")
+
+    def test_card_summary_exposes_archived_take_prompt_for_diffing(self):
+        card = {
+            "id": "card-id", "timeline_index": 0, "artifact_number": 1,
+            "status": "DRAFT", "artifact_sha256": "render-hash",
+            "selected_draft_take_id": "take-id",
+            "draft_takes": [{
+                "id": "take-id", "attempt": 1, "artifact_sha256": "render-hash",
+                "ref_image_size": "max",
+                "assembled_prompt": "archived exact prompt", "prompt_hash": "prompt-hash",
+                "recipe": {"upstream_provenance": {
+                    "nodes": [{"node_id": "1"}], "graph_sha256": "graph-hash",
+                    "stored_bytes": 321, "truncated": False,
+                    "summary": {
+                        "models": [{"name": "h3.safetensors"}],
+                        "loras": [{"name": "look.safetensors"}],
+                        "patches": [{"class_type": "PDDPatch"}],
+                    },
+                }},
+            }],
+        }
+        take = self.routes._card_summary(card)["draft_takes"][0]
+        self.assertEqual(take["assembled_prompt"], "archived exact prompt")
+        self.assertTrue(take["selected"])
+        self.assertEqual(take["generation_setup"]["models"][0]["name"], "h3.safetensors")
+        self.assertEqual(take["generation_setup"]["node_count"], 1)
+        self.assertEqual(take["ref_image_size"], "max")
+        self.assertEqual(take["settings"]["ref_image_size"], "max")
+
 
 if __name__ == "__main__":
     unittest.main()

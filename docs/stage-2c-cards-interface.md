@@ -29,13 +29,15 @@ The validation path is: open a project; inspect its cards; open Card 7; jump to 
 | `assembled_prompt` | Deterministic user-authored six-section prompt before runtime anchor reinforcement. |
 | `prompt_hash` | SHA-256 of UTF-8 `assembled_prompt`. |
 | `continuation_strategy` | Initially `direct_mmh3` or `independent`; stored explicitly rather than inferred from card position. |
-| `reference_set` | Backward-compatible snapshot/summary of the graph-provided references used or selected for this card. Stage 2C displays this but does not build the full asset manager. |
+| `ref_image_size` | Per-card REF2VA reference sizing choice, `match` or `max`; changing it after rendering requires Retry. |
+| `reference_set` | Immutable generation snapshot of the references used by this card, including stable asset IDs, hashes, roles, per-media ordering, and prompt-token assignments. The planned project asset library supplies project defaults while editable cards may persist their own inherited or overridden selection. |
 | `accepted_publication_id` | Stable UUID for the selected accepted take, or `null`. Existing publication history remains immutable. |
 | `draft_inputs_dirty` | `true` when generation inputs changed after the current draft; blocks Accept until Retry produces a matching artifact. |
+| `draft_takes`, `selected_draft_take_id` | Successful immutable attempts and the attempt currently mirrored into the card and eligible for acceptance. |
 
 Keep `prompt` as a compatibility alias containing the exact assembled prompt used by existing controller and archive paths. New code must derive it from `assembled_prompt`; it must not become a second editable source of truth.
 
-The persisted lifecycle states become `EMPTY`, `DRAFT`, `ACCEPTED`, and `FAILED`. `FAILED` means an empty card has no usable artifact after generation failed. A failed retry retains its previous `DRAFT` artifact and records the failed operation in `last_operation`/`last_error` instead of discarding the usable draft.
+The persisted lifecycle states are `EMPTY`, `DRAFT`, `ACCEPTED`, `FAILED`, and `INVALIDATED`. `FAILED` means an empty or invalidated card has no usable artifact after generation failed. A failed retry retains its previous `DRAFT` artifact and records the failed operation in `last_operation`/`last_error` instead of discarding the usable draft. `INVALIDATED` preserves the card definition after its entire render lineage is deliberately removed.
 
 Existing `recipe` and generation fingerprint continue to snapshot model/config identifiers, sampler, exact external sigmas, references, prompt, parent hash, and runtime capabilities. Acceptance already records master path/hash and timestamps. Stage 2C exposes these fields rather than duplicating their authoritative values.
 
@@ -115,8 +117,9 @@ The expanded layout contains:
 - per-section Copy Previous, Copy From Card, Keep, and Clear controls;
 - assembled prompt preview;
 - duration, seed, fixed generation mode, continuation strategy, ancestry, active anchors, and reference summary;
-- card preview video when registered;
-- state-aware Generate, Retry, Accept, and Append actions.
+- a per-card REF2VA `match`/`max` reference image-size selector synchronized to Generate and Retry;
+- card preview video when registered, plus retained-take viewing, immutable archived-prompt versus working-prompt code diff, selection, and deletion controls;
+- state-aware Generate, Retry, Retry with a newly persisted random seed, Accept, and Append actions.
 - project creation and validated project-folder selection under the ComfyUI output root;
 - identity history with readable source-card/frame labels and active binding controls;
 - prompt-style media numbering for recorded MMH3 resources plus navigation to the connected reference graph;
@@ -126,6 +129,8 @@ The expanded layout contains:
 - full-prompt paste/import for editable cards, with complete or partial canonical headings assigned to their sections and unlabelled text retained in `detailed_description`.
 - a persistent execution panel below the card workspace showing the current node/stage, live sampling progress, bounded LongCaster log output, and execution errors or tracebacks, with a compact always-visible status row and a toggleable fixed-height scrolling log;
 - a **Stop Generation / Unlock** header action that interrupts ComfyUI and queues the existing cancel operation so project locks are reconciled without closing Studio.
+- separate **Card** and **Project** tabs, with the global execution and stop controls visible from either view;
+- a Project identity manager showing checkpoint image, label, subject, source card/frame, scope, enabled state, and active binding, plus accepted-card preview selection and the existing bind/enable/disable/clear/create operations;
 
 Edits autosave through revision-checked API calls after a short debounce and flush before generation. A dirty indicator remains visible until acknowledged. Closing, navigating, or queueing while a save failed produces an explicit warning. Keyboard focus and tab order make all six sections reachable without closing the workspace.
 
@@ -139,7 +144,8 @@ Add project/card endpoints alongside the current identity routes:
 - read a complete project/card editor state;
 - update editable card fields and sections;
 - copy or clear one or more sections;
-- stream an already registered card preview.
+- stream an already registered card or retained-take preview;
+- select an exact retained take on the active draft, or delete unselected takes.
 
 Every mutation includes the manifest `revision`. `ProjectStore` performs the change under its existing cross-process lock and returns HTTP 409 for a stale revision so two browser tabs cannot silently overwrite one another. Routes accept stable project names and card UUIDs and reuse existing path containment and manifest validation.
 
@@ -171,6 +177,9 @@ Stage 2C does not implement Context Loop, Drift Control, color-stable drift, CLS
 - Assembly is deterministic and preserves section text exactly.
 - Revision conflicts and pending-generation edits fail safely.
 - Failed retries retain the prior usable draft.
+- Successful retries retain the superseded artifact, latent, frozen inputs, and preview as an unselected take.
+- Only the active final card can be invalidated; its prompt remains editable while every associated render artifact is removed.
+- Project-wide invalidation preserves every card definition, unlocks Project-tab resolution controls, and restarts ordered regeneration from Card 1.
 - Existing flat-prompt workflows still resume and generate unchanged until explicitly converted.
 - The documented Card 7 to Card 8 workflow succeeds through the Cards workspace.
 - A local GPU acceptance run reaches 10–20+ cards, restarts, resumes, and continues with correct anchors, references, prompt hashes, and AV seams.
