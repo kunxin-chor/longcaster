@@ -641,9 +641,9 @@ function createCardsWorkspace(node) {
     modeField.append(cardsElement("div", "lc-cards-help", "REF2VA uses the connected reference packet on every card. T2VA is text-only. Mode locks after the first render."));
     const strategyField = cardsElement("div", "lc-cards-field");
     const strategy = document.createElement("select");
-    for (const [value, label] of [["direct_mmh3", "Continue previous card (direct MMH3)"], ["independent", "Independent shot"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; strategy.append(option); }
+    for (const [value, label] of [["direct_mmh3", "Continue previous card (direct MMH3)"], ["image_restart", "Image restart (previous last frame)"], ["independent", "Independent shot"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; strategy.append(option); }
     strategyField.append(cardsElement("label", "", "Continuation strategy"), strategy);
-    strategyField.append(cardsElement("div", "lc-cards-help", "Direct MMH3 preserves the accepted parent’s final 39 frames and joint audio/video latent. Independent starts without a generation parent."));
+    strategyField.append(cardsElement("div", "lc-cards-help", "Direct MMH3 preserves the accepted parent’s final 39 joint audio/video latent frames. Image Restart creates a fresh latent and guides frame 0 with the predecessor’s final image. Independent starts without a generation parent."));
     const refImageSizeField = cardsElement("div", "lc-cards-field");
     const refImageSize = document.createElement("select");
     for (const [value, label] of [["match", "Match generation size"], ["max", "Maximum reference size"]]) {

@@ -9,6 +9,7 @@ from longcaster.state_anchor import (
     identity_instruction,
     identity_source_frame,
     reinforce_prompt,
+    state_anchor_target_frame,
     validate_identity_scope,
 )
 
@@ -38,6 +39,12 @@ class StateAnchorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             continuation_anchor_frame(0)
 
+    def test_image_restart_anchor_targets_first_frame(self):
+        self.assertEqual(state_anchor_target_frame("image_restart", 0), 0)
+        self.assertEqual(state_anchor_target_frame("direct_mmh3", 39), 38)
+        with self.assertRaisesRegex(ValueError, "does not use a state anchor"):
+            state_anchor_target_frame("independent", 0)
+
     def test_prompt_sections_receive_minimal_instruction(self):
         prompt = "summary:\nWalk into the room.\n\nretention_analysis:\nKeep identity."
         updated, injected, sections = reinforce_prompt(prompt)
@@ -62,6 +69,9 @@ class StateAnchorTests(unittest.TestCase):
             {"anchor_id": "new", "role": "current_state", "enabled": True, "created_at": "2026-02-01"},
         ]}
         self.assertEqual(current_state_anchor(card)["anchor_id"], "new")
+        self.assertEqual(
+            current_state_anchor(card, include_disabled=True)["anchor_id"], "off"
+        )
 
     def test_identity_record_is_not_mistaken_for_current_state(self):
         card = {"anchors": [{"anchor_id": "face", "role": "identity", "enabled": True}]}

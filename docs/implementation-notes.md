@@ -13,6 +13,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 - T2VA projects as the standard sampling baseline. A pristine first card may switch between T2VA and REF2VA; the selected project mode locks when rendering begins.
 - MMH3 card packing, full archive verification, immutable accepted masters, and hash validation.
 - Direct joint audio/video latent continuation behind `DirectLatentContinuation`, with a 39-frame handover and no VAE round trip.
+- Per-card `image_restart`: a fresh joint AV latent guided at frame 0 by the accepted predecessor's persisted final-frame image, allowing a scene reset before later cards resume direct latent continuation.
 - Stage 2A automatic current-state anchors: lossless final-frame PNG extraction at acceptance, UUID-backed card metadata, native H3 `MiniMaxH3AddGuide` conditioning at the handover boundary, and optional minimal prompt reinforcement.
 - Stage 2B manual identity anchors: preview-relative frame selection from immutable accepted cards, project-level subject binding, lossless historical PNG persistence, native H3 `minimax_refs` conditioning without a spatial keyframe, and persisted prompt scopes for limiting attribute inheritance.
 - Visual Stage 2B picker: server-side project/card discovery, an embedded project-preview player with playhead-to-frame synchronization, exact MMH3 frame confirmation, direct enable/disable/clear controls, and optional one-frame `IMAGE` input interoperability.
@@ -60,7 +61,7 @@ Automated checks do not measure whether the model obeys the visual state strongl
 
 - Branching and non-tail parent selection.
 - Per-card T2VA/I2VA/L2VA/FL2VA/REF2VA switching.
-- User-supplied first/last-frame guides beyond the automatic current-state anchor.
+- Arbitrary user-supplied first/last-frame guides beyond the predecessor final-frame Image Restart mode.
 - CLSS, automatic best-frame selection, face detection, multi-subject UI, and additional anti-drift work.
 - Bridge retakes, latent upscale, PDD upscale, prompt inheritance/composition, and custom decoder UI.
 - Automatic embedding or copying of the reusable reference packet into each card archive.

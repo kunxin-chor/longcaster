@@ -28,7 +28,7 @@ The validation path is: open a project; inspect its cards; open Card 7; jump to 
 | `prompt_format` | `structured_v1` for assembled prompts or `legacy_flat` for an unconverted historical prompt. |
 | `assembled_prompt` | Deterministic user-authored six-section prompt before runtime anchor reinforcement. |
 | `prompt_hash` | SHA-256 of UTF-8 `assembled_prompt`. |
-| `continuation_strategy` | Initially `direct_mmh3` or `independent`; stored explicitly rather than inferred from card position. |
+| `continuation_strategy` | `direct_mmh3`, `image_restart`, or `independent`; stored explicitly rather than inferred from card position. |
 | `ref_image_size` | Per-card REF2VA reference sizing choice, `match` or `max`; changing it after rendering requires Retry. |
 | `reference_set` | Immutable generation snapshot of the references used by this card, including stable asset IDs, hashes, roles, per-media ordering, and prompt-token assignments. The planned project asset library supplies project defaults while editable cards may persist their own inherited or overridden selection. |
 | `accepted_publication_id` | Stable UUID for the selected accepted take, or `null`. Existing publication history remains immutable. |

@@ -25,13 +25,13 @@
 
 ## Manifest
 
-`project.json` schema version 12 contains project-wide fixed settings and a list of cards. Schema 1–11 projects migrate in place by adding missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, and draft-take fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 14 contains project-wide fixed settings and a list of cards. Schema 1–13 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, and continuation-strategy fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `13`. |
+| `schema_version` | Manifest schema, currently `14`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
@@ -56,7 +56,7 @@ Card fields include:
 | `status` | `EMPTY`, `DRAFT`, `ACCEPTED`, `FAILED`, or `INVALIDATED`. A failed Retry retains the prior usable `DRAFT`; an invalidated card retains its definition but has no render lineage. |
 | `prompt`, `assembled_prompt`, `prompt_hash`, `seed` | Assembled generation prompt compatibility value, canonical user prompt, its UTF-8 SHA-256, and seed. |
 | `prompt_format`, `prompt_sections` | `structured_v1` six-section records or an untouched `legacy_flat` prompt, plus text/provenance records. |
-| `continuation_strategy`, `reference_set` | Explicit continuation choice and the last graph-provided reference snapshot/summary. |
+| `continuation_strategy`, `reference_set` | Explicit continuation choice (`independent`, `direct_mmh3`, or `image_restart`) and the last graph-provided reference snapshot/summary. |
 | `continuation_source` | Frozen source-card UUID plus `accepted_master` or a ready derivative UUID for this card's direct handover. |
 | `continuation_source_preference` | Default source to select when the next direct-continuation card is appended. |
 | `refine_enabled` | Manual-mode decision captured while the card is editable; ignored when project refine is Off or Auto. |
@@ -87,7 +87,7 @@ The recipe's optional `upstream_provenance` record snapshots the submitted nodes
 
 Each refine derivative records its UUID, source card/master path and hash, cadence, `PROCESSING`/`READY`/`FAILED` status, exact refine recipe, output path/hash, timings, prefix-protection diagnostics, audio behavior, and error. A ready derivative can become the next card's frozen continuation source. A failed regeneration preserves any previous ready derivative. Refine publication uses a separate artifact path and revalidates the accepted source hash before committing. Unpublish removes all refine derivatives and derivative metadata for that card while retaining the immutable accepted master in publication history.
 
-Generation ancestry and timeline order are separate fields. The UI appends a linear tail. An editable tail may switch from `direct_mmh3` to `independent`, which clears `generation_parent_id` while retaining `timeline_predecessor_id`; switching back restores the accepted predecessor as its generation parent.
+Generation ancestry and timeline order are separate fields. The UI appends a linear tail. An editable tail may use `direct_mmh3`, which preserves the predecessor's final 39 joint AV latent frames; `image_restart`, which keeps the accepted predecessor as generation parent but uses only its final-frame current-state anchor at target frame 0 with a fresh latent; or `independent`, which clears `generation_parent_id` while retaining `timeline_predecessor_id`. `image_restart` has zero continuation context frames and no latent `continuation_source`.
 
 Structured prompt sections are stored in the fixed order `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`. Each contains exact `text` plus provenance: `source_type`, nullable `source_card_id`, and `modified_after_copy`. The deterministic assembler in `longcaster/prompt_sections.py` owns the plain labeled format and prompt hash. Runtime state/identity reinforcement creates `effective_prompt` in the generation recipe without mutating these saved user sections.
 

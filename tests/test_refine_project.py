@@ -212,7 +212,7 @@ class RefineProjectTests(unittest.TestCase):
             json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
         )
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 13)
+        self.assertEqual(migrated["schema_version"], 14)
         self.assertEqual(migrated["lora_activation_words"], "")
 
 

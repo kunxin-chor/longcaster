@@ -156,6 +156,8 @@ def duplicate_project(
                             "type": "accepted_master",
                             "derivative_id": None,
                         }
+                    else:
+                        card["continuation_source"] = None
                 duplicated["active_card_id"] = duplicated["cards"][0]["id"]
                 duplicated["active_identity_anchors"] = {}
                 duplicated["last_operation"]["kind"] = "duplicate_and_invalidate_project"

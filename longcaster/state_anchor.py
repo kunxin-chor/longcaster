@@ -24,11 +24,14 @@ CONTINUITY_INSTRUCTION = (
 )
 
 
-def current_state_anchor(card: dict[str, Any]) -> dict[str, Any] | None:
+def current_state_anchor(
+    card: dict[str, Any], *, include_disabled: bool = False
+) -> dict[str, Any] | None:
     anchors = card.get("anchors") or []
     matches = [
         item for item in anchors
-        if item.get("role") == ANCHOR_ROLE and bool(item.get("enabled", True))
+        if item.get("role") == ANCHOR_ROLE
+        and (include_disabled or bool(item.get("enabled", True)))
     ]
     if not matches:
         return None
@@ -39,6 +42,15 @@ def continuation_anchor_frame(context_frame_count: int) -> int:
     if int(context_frame_count) < 1:
         raise ValueError("a continuation state anchor requires at least one handover frame")
     return int(context_frame_count) - 1
+
+
+def state_anchor_target_frame(strategy: str, context_frame_count: int) -> int:
+    """Place a state guide at the handover boundary or a fresh clip's first frame."""
+    if strategy == "direct_mmh3":
+        return continuation_anchor_frame(context_frame_count)
+    if strategy == "image_restart":
+        return 0
+    raise ValueError(f"continuation strategy does not use a state anchor: {strategy}")
 
 
 def identity_source_frame(card: dict[str, Any], preview_frame_index: int) -> int:

@@ -188,7 +188,8 @@ class WorkflowSerializationTests(unittest.TestCase):
             self.assertIn(endpoint, source)
         for control in (
             "New Project", "Identity Checkpoints", "Reference Resources",
-            "Continue previous card (direct MMH3)", "Historical flat prompt",
+            "Continue previous card (direct MMH3)",
+            "Image restart (previous last frame)", "Historical flat prompt",
             "Megapixels (MP)", "PROJECT_RESOLUTION_MULTIPLE = 32",
             "loadEpoch", "loadProjects(body.project, false)",
             "Paste Full Prompt", "import_prompt: pasted",

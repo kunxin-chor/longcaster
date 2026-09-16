@@ -28,11 +28,11 @@ from .prompt_sections import (
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
-CONTINUATION_STRATEGIES = {"independent", "direct_mmh3"}
+CONTINUATION_STRATEGIES = {"independent", "direct_mmh3", "image_restart"}
 REF_IMAGE_SIZES = {"match", "max"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
@@ -1243,6 +1243,8 @@ class ProjectStore:
                             "type": "accepted_master",
                             "derivative_id": None,
                         }
+                    else:
+                        card["continuation_source"] = None
                 manifest["active_card_id"] = manifest["cards"][0]["id"]
                 manifest["active_identity_anchors"] = {}
                 manifest["last_operation"] = {
@@ -1290,9 +1292,13 @@ class ProjectStore:
                 or next_card.get("timeline_predecessor_id") != card["id"]
             ):
                 return deepcopy(manifest), False
-            if next_card.get("continuation_strategy") == "direct_mmh3":
+            if next_card.get("continuation_strategy") in {"direct_mmh3", "image_restart"}:
                 next_card["generation_parent_id"] = card["id"]
-                next_card["continuation_source"] = self._preferred_source(card)
+                next_card["continuation_source"] = (
+                    self._preferred_source(card)
+                    if next_card.get("continuation_strategy") == "direct_mmh3"
+                    else None
+                )
             manifest["active_card_id"] = next_card["id"]
             next_card["updated_at"] = utc_now()
             manifest["last_operation"] = {
@@ -1734,16 +1740,22 @@ class ProjectStore:
             if continuation_strategy is not None:
                 strategy = str(continuation_strategy)
                 if strategy not in CONTINUATION_STRATEGIES:
-                    raise ProjectError("continuation_strategy must be independent or direct_mmh3")
-                if strategy == "direct_mmh3":
+                    raise ProjectError(
+                        "continuation_strategy must be independent, direct_mmh3, or image_restart"
+                    )
+                if strategy in {"direct_mmh3", "image_restart"}:
                     predecessor_id = card.get("timeline_predecessor_id")
                     if predecessor_id is None:
                         raise ProjectError("the first card must use independent generation")
                     predecessor = self._card(manifest, predecessor_id)
                     if predecessor.get("status") != "ACCEPTED":
-                        raise ProjectError("direct MMH3 continuation requires an accepted predecessor")
+                        raise ProjectError(f"{strategy} requires an accepted predecessor")
                     card["generation_parent_id"] = predecessor_id
-                    card["continuation_source"] = self._preferred_source(predecessor)
+                    card["continuation_source"] = (
+                        self._preferred_source(predecessor)
+                        if strategy == "direct_mmh3"
+                        else None
+                    )
                 else:
                     card["generation_parent_id"] = None
                     card["continuation_source"] = None
@@ -2256,12 +2268,19 @@ class ProjectStore:
                 raise ProjectError("card ref_image_size must be match or max")
             if card.get("continuation_strategy") == "independent" and parent_id is not None:
                 raise ProjectError("independent cards cannot have a generation parent")
-            if card.get("continuation_strategy") == "direct_mmh3" and parent_id is None:
-                raise ProjectError("direct MMH3 continuation requires a generation parent")
+            if (
+                card.get("continuation_strategy") in {"direct_mmh3", "image_restart"}
+                and parent_id is None
+            ):
+                raise ProjectError(
+                    f"{card.get('continuation_strategy')} requires a generation parent"
+                )
             continuation_source = card.get("continuation_source")
-            if card.get("continuation_strategy") == "independent":
+            if card.get("continuation_strategy") in {"independent", "image_restart"}:
                 if continuation_source is not None:
-                    raise ProjectError("independent cards cannot have a continuation source")
+                    raise ProjectError(
+                        f"{card.get('continuation_strategy')} cards cannot have a latent continuation source"
+                    )
             else:
                 if not isinstance(continuation_source, dict):
                     raise ProjectError("direct MMH3 continuation requires a continuation source")
@@ -2522,7 +2541,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         for card in manifest.get("cards", []):

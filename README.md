@@ -127,6 +127,8 @@ Project canvas size is fixed at creation. Generation mode can be changed between
 
 Requested duration means new timeline duration. H3 output is aligned to the nearest `17k+5` frame count. A continuation reserves 39 pixel frames as the direct latent handover, so both requested duration and actual new/generated frame counts are recorded.
 
+An editable card after Card 1 can instead select **Image restart (previous last frame)**. This creates a fresh joint AV latent with no 39-frame handover and applies the accepted predecessor's persisted final-frame PNG through `MiniMaxH3AddGuide` at frame 0. It is useful as a visual reset between scenes: motion and audio latent history are intentionally discarded, while later cards can return to direct MMH3 continuation from the accepted restarted card. The guide is conditioning rather than a pixel-exact first-frame guarantee.
+
 ## Stage 2A current-state anchors
 
 Accepting a card now decodes its final video frame and writes a lossless PNG current-state anchor beside the project. The accepted `.mmh3` master remains immutable. For every later card, LongCaster still creates the direct joint AV latent handover and also feeds the source card's anchor through ComfyUI's native `MiniMaxH3AddGuide` / `minimax_keyframes` conditioning.

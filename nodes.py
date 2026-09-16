@@ -45,7 +45,6 @@ from .longcaster.state_anchor import (
     apply_native_anchor,
     cache_preview_anchor,
     cached_last_frame_anchor,
-    continuation_anchor_frame,
     current_state_anchor,
     decode_identity_frame,
     decode_identity_preview,
@@ -54,6 +53,7 @@ from .longcaster.state_anchor import (
     load_anchor_image,
     persist_identity_image_anchor,
     reinforce_prompt,
+    state_anchor_target_frame,
 )
 from .longcaster.timeline_export import export_timeline_nvenc
 
@@ -455,13 +455,22 @@ class LongCasterProject:
         current = store.active_card(manifest)
         if current.get("prompt_format") == "structured_v1":
             prompt = current["assembled_prompt"]
+        continuation_strategy = current.get("continuation_strategy", "independent")
         parent = (
             store.parent_card(manifest, current)
-            if current.get("continuation_strategy") == "direct_mmh3"
+            if continuation_strategy in {"direct_mmh3", "image_restart"}
             else None
         )
-        continuation_source = store.continuation_artifact(manifest, current) if parent else None
-        context_frames = H3_CONTINUATION_CONTEXT_FRAMES if parent else 0
+        continuation_source = (
+            store.continuation_artifact(manifest, current)
+            if continuation_strategy == "direct_mmh3"
+            else None
+        )
+        context_frames = (
+            H3_CONTINUATION_CONTEXT_FRAMES
+            if continuation_strategy == "direct_mmh3"
+            else 0
+        )
         duration = resolve_duration(duration_seconds, context_frames=context_frames)
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)
         sigma_schedule = sigma_values(selected_sigmas)
@@ -485,15 +494,18 @@ class LongCasterProject:
         effective_prompt = prompt
         prompt_reinforced = False
         prompt_sections: list[str] = []
-        if parent and auto_state_anchor:
-            parent_packet, _ = _packet_for_card(store, parent)
-            if parent_packet is None:
-                raise ProjectError("accepted continuation parent has no MMH3 master")
-            anchor = current_state_anchor(parent)
+        state_anchor_required = continuation_strategy == "image_restart"
+        if parent and (auto_state_anchor or state_anchor_required):
+            anchor = current_state_anchor(
+                parent, include_disabled=state_anchor_required
+            )
             has_current_state_record = any(
                 item.get("role") == "current_state" for item in parent.get("anchors", [])
             )
             if anchor is None and not has_current_state_record:
+                parent_packet, _ = _packet_for_card(store, parent)
+                if parent_packet is None:
+                    raise ProjectError("accepted continuation parent has no MMH3 master")
                 anchor = extract_last_frame_anchor(
                     store=store,
                     card=parent,
@@ -503,9 +515,15 @@ class LongCasterProject:
                 manifest = store.add_anchor(parent["id"], anchor)
                 current = store.active_card(manifest)
                 parent = store.parent_card(manifest, current)
+            if state_anchor_required and anchor is None:
+                raise ProjectError(
+                    "Image Restart requires the accepted predecessor's enabled final-frame anchor"
+                )
             if anchor is not None:
                 anchor_image = load_anchor_image(store, anchor)
-                anchor_frame_index = continuation_anchor_frame(context_frames)
+                anchor_frame_index = state_anchor_target_frame(
+                    continuation_strategy, context_frames
+                )
                 LOGGER.info(
                     "LongCaster state anchor active=True source_card_id=%s frame_index=%s "
                     "timestamp=%.3fs asset=%s mechanism=%s target_frame_index=%d "
@@ -524,7 +542,7 @@ class LongCasterProject:
                     parent["id"],
                 )
         else:
-            reason = "first_card" if parent is None else "disabled"
+            reason = "first_card_or_independent" if parent is None else "disabled"
             LOGGER.info("LongCaster state anchor active=False reason=%s prompt_reinforcement=False", reason)
         if reinforce_state_prompt and (anchor is not None or identity_anchor is not None):
             effective_prompt, prompt_reinforced, prompt_sections = reinforce_prompt(
@@ -606,6 +624,7 @@ class LongCasterProject:
             "parent_sha256": (
                 continuation_source.get("artifact_sha256") if continuation_source else None
             ),
+            "continuation_strategy": continuation_strategy,
             "continuation_source": continuation_source,
             "references": references,
             "ref_image_size": ref_image_size,
@@ -639,7 +658,7 @@ class LongCasterProject:
             )
             continuation_plan = None
             target_latent = empty_latent
-            if parent:
+            if continuation_strategy == "direct_mmh3":
                 if continuation_source is None:
                     raise ProjectError("direct continuation has no resolved source")
                 parent_packet, _ = _packet_for_artifact(
