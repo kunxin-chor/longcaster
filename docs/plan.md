@@ -32,6 +32,10 @@ Implement the remaining Studio work in this order:
 
 Stage 2C acceptance requires the full workflow to be operable from Studio during a practical multi-card run: monitor generation, stop safely, edit and append cards, choose and verify each REF2VA card's `match` or `max` reference sizing, manage project references and identities, and create the final stitched video. Test these controls across a ComfyUI restart and project resume.
 
+## Card-local Ref2VA references
+
+Implemented the one-picture card authoring UI, native image ordering, deterministic latent-only softening, bounded clean-latent caching, source/take provenance, and Stage 3A reconstruction. Automated persistence, CPU tensor, and frontend-control tests cover the feature. Real H3 model and integrated Studio acceptance remain pending. This does not implement the broader project asset library or arbitrary media reordering described above.
+
 ## Temporary Stage 3A detour
 
 **Continuation refine is implemented; GPU/workflow and long-run A/B validation remain user-run.** Studio supports synchronized Off, Auto, and Manual controls; a per-card Manual checkbox; acceptance-time refinement; post-accept generation/regeneration; unpublish cleanup; separate refine SIGMAS, sampler, seed policy, and optional model; immutable accepted masters; separately verified derivative MMH3 artifacts; joint AV prefix reconstruction and fail-closed verification; explicit accepted/refined source selection; frozen continuation lineage; and safe fallback. No CLSS, upscale, color correction, scene detection, or automatic drift detection was added.

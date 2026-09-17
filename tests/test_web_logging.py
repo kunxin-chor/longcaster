@@ -131,6 +131,29 @@ class WebLoggingTests(unittest.TestCase):
         self.assertEqual(take["ref_image_size"], "max")
         self.assertEqual(take["settings"]["ref_image_size"], "max")
 
+    def test_card_summary_exposes_frozen_picture_sources_for_prompt_rail(self):
+        identity = {"active": True, "anchor_id": "anchor-id"}
+        card_reference = {"id": "reference-id", "enabled": True}
+        references = {"resources": [{"id": "global-id", "kind": "image"}]}
+        card = {
+            "id": "card-id", "timeline_index": 0, "artifact_number": 1,
+            "status": "ACCEPTED", "artifact_sha256": "render-hash",
+            "recipe": {"identity_anchor": identity, "card_reference": card_reference},
+            "reference_set": references,
+            "selected_draft_take_id": "take-id",
+            "draft_takes": [{
+                "id": "take-id", "attempt": 1, "artifact_sha256": "render-hash",
+                "reference_set": references,
+                "recipe": {"identity_anchor": identity, "card_reference": card_reference},
+            }],
+        }
+        summary = self.routes._card_summary(card)
+        self.assertEqual(summary["identity_anchor_resolved"], identity)
+        self.assertEqual(summary["card_reference_resolved"], card_reference)
+        self.assertEqual(summary["draft_takes"][0]["settings"]["identity_anchor"], identity)
+        self.assertEqual(summary["draft_takes"][0]["settings"]["card_reference"], card_reference)
+        self.assertEqual(summary["draft_takes"][0]["settings"]["references"], references)
+
 
 if __name__ == "__main__":
     unittest.main()

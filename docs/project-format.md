@@ -25,17 +25,18 @@
 
 ## Manifest
 
-`project.json` schema version 14 contains project-wide fixed settings and a list of cards. Schema 1–13 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, and continuation-strategy fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 16 contains project-wide fixed settings and a list of cards. Schema 1–15 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, and drift-treatment fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `14`. |
+| `schema_version` | Manifest schema, currently `16`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
 | `refine_cadence` | `off`, `every_accepted_card`, or `manual`. |
+| `continuation_treatment` | Project policy: `off`, `drift_control`, or `color_stable`; migrated projects default to `off`. |
 | `lora_activation_words` | Exact project-wide trigger text injected at runtime into every newly generated card; it does not load or apply a LoRA. |
 | `width`, `height` | Project generation canvas; both values must be multiples of 32. Resolution is editable before the first render or after every card has been invalidated. |
 | `active_card_id` | Stable UUID of the current card. |
@@ -59,6 +60,7 @@ Card fields include:
 | `continuation_strategy`, `reference_set` | Explicit continuation choice (`independent`, `direct_mmh3`, or `image_restart`) and the last graph-provided reference snapshot/summary. |
 | `continuation_source` | Frozen source-card UUID plus `accepted_master` or a ready derivative UUID for this card's direct handover. |
 | `continuation_source_preference` | Default source to select when the next direct-continuation card is appended. |
+| `color_anchor_source_card_id` | Stable first-card baseline for the current direct-continuation ancestry. Fresh independent/Image Restart cards point to themselves. |
 | `refine_enabled` | Manual-mode decision captured while the card is editable; ignored when project refine is Off or Auto. |
 | `derivatives` | Rebuildable refine records; these never replace or mutate the accepted master. |
 | `accepted_publication_id` | Stable UUID of the selected accepted take, or `null`. |
@@ -66,13 +68,14 @@ Card fields include:
 | `draft_takes`, `selected_draft_take_id` | Immutable successful generation records and the UUID currently mirrored into the card fields. Retry appends a take; selection restores that take's exact inputs and artifacts. |
 | `requested_duration_seconds` | Requested new timeline duration. |
 | `ref_image_size` | Per-card REF2VA image sizing policy: `match` or `max`. Appended cards inherit the preceding card's choice. |
+| `card_reference` | Nullable card-owned picture: UUID `id`, project-relative `asset_path`, `asset_sha256`, `enabled`, `latent_mode` (`normal`/`soften`), and `latent_strength` in `[0,1]`. New cards start with `null`. |
 | `generated_frame_count` | Full sampled target, including continuation context. |
 | `context_frame_count` | Preserved prefix; zero for Card 1 and 39 for direct continuation. |
 | `actual_new_frame_count`, `actual_duration_seconds` | New timeline contribution after context removal. |
 | `draft_path`, `master_path` | Relative MMH3 artifact paths. |
 | `artifact_sha256` | Hash of the current authoritative artifact. |
 | `generation_fingerprint` | SHA-256 of the canonical generation recipe. |
-| `recipe` | Prompt, duration plan, model summary, compact upstream generation provenance, exact sigma values, sampler, parent hash, references, and runtime capability snapshot. |
+| `recipe` | Prompt, duration plan, model summary, compact upstream generation provenance, exact sigma values, sampler, parent hash, references, runtime capability snapshot, and the exact continuation-treatment recipe, schedule hash, baseline/source hashes, and VAE identity when applicable. |
 | `anchors` | Persistent anchor records sourced from this card. These can contain automatic `current_state` and manual `identity` records. |
 | `preview` | Optional disposable project-owned MP4 metadata registered from the card's current artifact. |
 | `publication_history` | Superseded accepted versions retained when the latest card is unpublished. |
@@ -104,6 +107,18 @@ Project-wide invalidation performs the same render-lineage removal for every car
 Duplicate-and-invalidate creates an independent project containing the source settings and complete card-definition timeline without cloning any render artifacts. All copied cards start `INVALIDATED`, artifact numbering restarts at one in the new project, identity bindings are cleared, Card 1 is active, and resolution editing is immediately available. The source manifest and assets are never modified.
 
 ## Commit and recovery rules
+
+### Card-reference persistence
+
+Schema 15 migrates older cards and takes with `card_reference=null`. Each upload receives a new UUID and is atomically stored at `card_references/<card UUID>/<reference UUID>.png`, normalized to RGB with EXIF orientation applied. Uploads are limited to 32 MiB and 32 million pixels. The authoring record does not contain latent tensors or a permanent picture index.
+
+Successful takes freeze the authoring record; their recipe additionally freezes `resolved_picture_index`, native resized width/height, reference sizing mode, canvas, process-local VAE identity, clean cache key, and cache version. The generated MMH3 card metadata also includes this resolved record. Selecting a take restores its source and settings. Old PNGs remain available after replacement/removal; card removal deletes the owned directory. Invalidation preserves current authoring inputs, and both duplication modes copy the reference directory.
+
+The optional project `observed_reference_set` records the last graph-resolved packet for Studio numbering. It is a snapshot, not ownership of global reference assets. Generate, Retry, Resume, and Accept refresh it when card references exist; incompatible packet changes dirty an existing draft without modifying any take. Accepted recipes remain immutable. Refine verifies packet resource identity and the frozen card picture's index and dimensions.
+
+The clean VAE cache is a bounded (eight entries / 256 MiB CPU), in-memory derived cache with no pickle or persistent tensors. Its key contains image hash, resized dimensions, `match`/`max`, canvas, VAE identity, and encoding version, but excludes strength. VAE identity includes a process-local instance token, model identity, parameter mutation versions, and patch identity where exposed. Unversioned inference parameters conservatively disable reuse. Restarting, replacing the VAE, or eviction can require another encode.
+
+### Render transactions
 
 - Manifest writes use a unique same-directory temporary file, flush and `fsync`, then `os.replace`.
 - A project lock serializes mutations across threads and processes.

@@ -1,5 +1,19 @@
 # ComfyUI MiniMax H3 LongCaster
 
+## Card Reference and latent strength
+
+In Studio's Card tab, **Card Reference** adds one picture owned by that card. Upload or replace an image, enable/disable it, and choose **Normal** or **Soften**. The input is saved as a lossless PNG inside the project. Accepted cards are read-only; T2VA does not support these references.
+
+The prompt editor's **Pictures** toggle opens a thumbnail rail showing the native picture order: connected project images, the enabled card reference, then the active identity anchor. Disabled card references remain visible as inactive and have no `<Picture N>`. The rail uses frozen numbering when viewing an accepted or unselected take. The current editable graph view shows thumbnails from connected image loaders. Frozen take views use numbered placeholders for graph-owned images because their pixels remain owned by the MMH3 packet; project-owned card and identity images retain their thumbnails. The open/closed preference is retained in the browser.
+
+The image is an ordinary MiniMax H3 `<Picture N>` reference. Ordering is project packet images, then the card picture, then the identity anchor; video/audio ordering remains native. Studio displays the number from the last executed packet, or the frozen number for an accepted card. Before the packet has executed, the number is unresolved. After graph reference changes, execute Resume or Generate/Retry to refresh it. Acceptance also checks the packet and blocks a stale draft. Prompts are never rewritten: update any `<Picture N>` text yourself when ordering changes.
+
+Normal uses the native latent. Soften uses `latent_strength * z` for this picture's VAE latent only: `1.0` is native Ref2VA, `0.0` zeroes that latent. The original resized RGB image still reaches MiniMax's multimodal text/vision presentation, including at zero strength. Zero therefore differs from disabling the reference. Try `0.50`, `0.35`, or `0.25` experimentally; `0.35` is not a universally optimal setting. There is no extra sampler pass, random noise, or blur.
+
+Strength changes mark a rendered draft dirty and require Retry before Accept. Every take freezes its image/settings and resolved number; selecting an older take restores its authoring inputs. Refine reconstructs the accepted source card's frozen reference. Clean latents are cached in CPU memory for up to eight entries / 256 MiB, independently of strength. Source, sizing, canvas, encoding-version, or VAE changes invalidate reuse; restart and eviction require another encode.
+
+Invalidation and unpublish retain the card reference. Project duplication copies it, including duplication with renders invalidated. Replace/Remove detach the current input while retaining historical PNGs for take restoration; removing the card deletes all its owned reference images. Appending a card starts with no card reference.
+
 LongCaster is a persistent card controller for iterative MiniMax H3 generation:
 
 `Generate → Retry → Accept → Append → Continue`
@@ -126,6 +140,12 @@ Middle-card editing is not exposed yet because descendants were conditioned on t
 Project canvas size is fixed at creation. Generation mode can be changed between `ref2va` and `t2va` while the first card is still pristine, then locks when rendering begins. Use a new project name to change resolution or to use a different mode after that point.
 
 Requested duration means new timeline duration. H3 output is aligned to the nearest `17k+5` frame count. A continuation reserves 39 pixel frames as the direct latent handover, so both requested duration and actual new/generated frame counts are recorded.
+
+### Direct-continuation drift control
+
+Studio's project-level **Continuation treatment** keeps existing projects on **Off** unless you opt in. **Drift-Control AV** applies only to direct MMH3 continuation: its disposable 12-step video prefix uses eight schedule-matched steps followed by weights `0.75, 0.5, 0.25, 0`, while the carried audio mask is unchanged. The dynamic sampler mask and H3 timestep mask use the connected schedule, including exact external PDD `SIGMAS`; LongCaster clones the supplied model before installing the temporary hooks.
+
+**Drift + Color-Stable AV** adds a weak low-frequency RGB correction. The first card in each direct-continuation ancestry is the immutable color baseline, Card 2 is deliberately neutral, and Card 3 onward compares the resolved continuation source against that baseline. Only the disposable video prefix is decoded and re-encoded; the correction is `E(corrected D(z)) - E(D(z))`, spatially low-passed and smoothly tapered from zero across the prefix. Source archives and audio latents are never edited. Independent shots and Image Restart establish a fresh baseline. Continuation refine remains unchanged; the reusable stage-binding boundary is reserved for future SelfLift integration.
 
 An editable card after Card 1 can instead select **Image restart (previous last frame)**. This creates a fresh joint AV latent with no 39-frame handover and applies the accepted predecessor's persisted final-frame PNG through `MiniMaxH3AddGuide` at frame 0. It is useful as a visual reset between scenes: motion and audio latent history are intentionally discarded, while later cards can return to direct MMH3 continuation from the accepted restarted card. The guide is conditioning rather than a pixel-exact first-frame guarantee.
 

@@ -1,10 +1,22 @@
 # MVP implementation notes
 
+## Card-local Ref2VA pictures
+
+Implemented one card-owned PNG input with Normal/Soften controls, native `<Picture N>` numbering, schema-15 migration, take restoration, authoring-asset lifecycle, and accepted-source refine reconstruction. Global packet ownership, direct 39-frame continuation, state/identity guides, and PDD MODEL/SIGMAS forwarding remain as before.
+
+`h3_runtime.build_conditioning` invokes the current native ReferenceToVideo node with named arguments. A per-call VAE proxy lets native code perform resizing and RGB presentation while caching only the mapped card-image encode. After native conditioning returns, `substitute_card_latent` clones containers and replaces only that image block's latent; it checks the block actually contains the proxy's returned clean tensor. Unexpected native structure fails explicitly. Other block metadata and image/video/audio references are retained.
+
+The cache is process-local and capped at eight entries / 256 MiB of CPU memory. Conservative VAE identity avoids unsafe cross-checkpoint disk reuse. Refine can rebuild a clean latent after restart; the recipe retains the original generation metadata, while the derivative's reference report records its reconstruction.
+
+The integration was checked against upstream [ComfyUI ReferenceToVideo](https://github.com/Comfy-Org/ComfyUI/blob/master/comfy_extras/nodes_minimax_h3.py) and the reference-latent concept in [neph1's nodes](https://github.com/neph1/comfyui-minimaxh3-condition-latent). Installed external files were not inspected. Tests exercise real CPU tensors and PNGs with a synthetic native node; live ComfyUI/VAE/Qwen, browser integration, GPU quality, and timing validation remain required. Studio labels an editable card's number as the last resolved packet value until the graph executes again.
+
 ## PDD family pairing
 
 PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses the Ref2VA PDD file. Stock FL2VA and FL2VA with the separate reference patch use the FL2VA PDD file. The reference patch supplies conditioning support; it does not change the underlying trunk family. Keep PDD `partition_check` set to `error`, since allowing a mismatch can silently degrade the result.
 
 ## Implemented
+
+- Schema 16 direct-continuation treatment policy: backward-compatible Off, Drift-Control AV with synchronized schedule-matched sampler/H3 video masks, and optional Color-Stable Drift AV with a stable ancestry baseline, neutral Card 2, video-only VAE delta correction, immutable-source hash verification, frozen recipes, and a reusable per-stage binding boundary for future SelfLift work. Stage 3A refine is unchanged.
 
 - Patch-agnostic upstream `MODEL` input and Comfy Basic Guider sampling.
 - Optional external `SIGMAS`, with finite/decreasing/terminal-zero validation and direct forwarding to the advanced sampler.

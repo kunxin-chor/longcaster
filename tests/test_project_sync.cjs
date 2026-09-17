@@ -32,7 +32,8 @@ function frontend() {
 
 function projectState(project = "basketball_trial2") {
     return {
-        project, generation_mode: "ref2va", refine_cadence: "manual", width: 576, height: 576,
+        project, generation_mode: "ref2va", refine_cadence: "manual",
+        continuation_treatment: "color_stable", width: 576, height: 576,
         active_card_id: "active", cards: [
             { id: "accepted", status: "ACCEPTED", seed: 3, assembled_prompt: "old card" },
             { id: "active", status: "DRAFT", seed: 42, requested_duration_seconds: 10, ref_image_size: "max", assembled_prompt: "current card" },
@@ -43,7 +44,7 @@ function projectState(project = "basketball_trial2") {
 function projectNode() {
     return {
         type: "LongCasterProject",
-        widgets: ["project_name", "generation_mode", "refine_cadence", "width", "height", "prompt", "duration_seconds", "seed", "ref_image_size", "action", "command_id"]
+        widgets: ["project_name", "generation_mode", "refine_cadence", "continuation_treatment", "width", "height", "prompt", "duration_seconds", "seed", "ref_image_size", "action", "command_id"]
             .map((name) => ({ name, value: "stale" })),
         graph: { setDirtyCanvas() {} }, size: [360, 300],
         addWidget() {}, setSize() {},
@@ -60,6 +61,59 @@ test("Project resolution UI requires full invalidation and warns about render lo
     assert.match(source, /Duplicate and Invalidate Project/);
     assert.match(source, /invalidate_renders: invalidateRenders/);
     assert.match(source, /runAction\("invalidate_all"/);
+});
+
+test("Continuation treatment exposes all backward-compatible project modes", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Continuation treatment/);
+    assert.match(source, /Drift-Control AV/);
+    assert.match(source, /Drift \+ Color-Stable AV/);
+    assert.match(source, /continuation_treatment: requested/);
+});
+
+test("shifted refine widgets from the first treatment release are repaired", () => {
+    const { context } = frontend();
+    const node = {widgets: [
+        {name: "continuation_treatment", value: "manual"},
+        {name: "refine_cadence", value: "euler"},
+        {name: "refine_sampler_name", value: "inherit"},
+        {name: "refine_seed_mode", value: "inherit"},
+    ]};
+    assert.equal(context.repairContinuationTreatmentWidgetOrder(node), true);
+    assert.equal(value(node, "continuation_treatment"), "off");
+    assert.equal(value(node, "refine_cadence"), "manual");
+    assert.equal(value(node, "refine_sampler_name"), "euler");
+    assert.equal(value(node, "refine_seed_mode"), "inherit");
+});
+
+test("workflows saved with the shifted order are repaired after input reordering", () => {
+    const { context } = frontend();
+    const node = {widgets: [
+        {name: "refine_cadence", value: "off"},
+        {name: "refine_sampler_name", value: "manual"},
+        {name: "refine_seed_mode", value: "euler"},
+        {name: "continuation_treatment", value: "inherit"},
+    ]};
+    assert.equal(context.repairContinuationTreatmentWidgetOrder(node), true);
+    assert.equal(value(node, "continuation_treatment"), "off");
+    assert.equal(value(node, "refine_cadence"), "manual");
+    assert.equal(value(node, "refine_sampler_name"), "euler");
+    assert.equal(value(node, "refine_seed_mode"), "inherit");
+});
+
+test("a lone cadence value in the sampler slot is repaired", () => {
+    const { context } = frontend();
+    const node = {widgets: [
+        {name: "refine_cadence", value: "off"},
+        {name: "refine_sampler_name", value: "manual"},
+        {name: "refine_seed_mode", value: "inherit"},
+        {name: "continuation_treatment", value: "off"},
+    ]};
+    assert.equal(context.repairContinuationTreatmentWidgetOrder(node), true);
+    assert.equal(value(node, "refine_cadence"), "manual");
+    assert.equal(value(node, "refine_sampler_name"), "euler");
+    assert.equal(value(node, "refine_seed_mode"), "inherit");
+    assert.equal(value(node, "continuation_treatment"), "off");
 });
 
 test("different-seed retry always returns a distinct valid integer", () => {
@@ -106,6 +160,7 @@ test("loading a Cards project updates node identity, active card, settings, and 
     assert.equal(value(node, "project_name"), state.project);
     assert.equal(value(node, "generation_mode"), "ref2va");
     assert.equal(value(node, "refine_cadence"), "manual");
+    assert.equal(value(node, "continuation_treatment"), "color_stable");
     assert.equal(value(node, "width"), 576);
     assert.equal(value(node, "height"), 576);
     assert.equal(value(node, "prompt"), "current card");

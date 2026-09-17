@@ -1,8 +1,59 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { createCardReferenceControls, referenceSettings } from "./card_reference.js";
+import { assemblePictureReferences, createPictureReferenceRail } from "./picture_reference_rail.js";
 
 function widget(node, name) {
     return node.widgets?.find((item) => item.name === name);
+}
+
+function repairContinuationTreatmentWidgetOrder(node) {
+    const treatment = widget(node, "continuation_treatment");
+    const cadence = widget(node, "refine_cadence");
+    const sampler = widget(node, "refine_sampler_name");
+    const seedMode = widget(node, "refine_seed_mode");
+    if (!treatment || !cadence || !sampler || !seedMode) return false;
+    const cadences = new Set(["off", "every_accepted_card", "manual"]);
+    const seedModes = new Set(["inherit", "offset"]);
+    const treatments = new Set(["off", "drift_control", "color_stable"]);
+    // A workflow saved while the bad order was active is read by the fixed
+    // order as cadence=<treatment>, sampler=<cadence>, seed=<sampler>, and
+    // treatment=<seed>. Restore it before generic invalid-value cleanup.
+    if (cadences.has(String(sampler.value))) {
+        const oldCadence = String(sampler.value);
+        const oldSampler = seedModes.has(String(seedMode.value))
+            ? "euler" : String(seedMode.value);
+        const oldSeedMode = seedModes.has(String(treatment.value))
+            ? String(treatment.value)
+            : seedModes.has(String(seedMode.value)) ? String(seedMode.value) : "inherit";
+        const oldTreatment = treatments.has(String(treatment.value))
+            ? String(treatment.value)
+            : treatments.has(String(cadence.value)) ? String(cadence.value) : "off";
+        cadence.value = oldCadence;
+        sampler.value = oldSampler;
+        seedMode.value = oldSeedMode;
+        treatment.value = oldTreatment;
+        return true;
+    }
+    // One release inserted continuation_treatment before the established
+    // refine widgets. Repair workflows saved with that positional shift.
+    if (seedModes.has(String(sampler.value)) && !cadences.has(String(cadence.value))) {
+        const oldCadence = String(treatment.value);
+        const oldSampler = String(cadence.value);
+        const oldSeedMode = String(sampler.value);
+        cadence.value = cadences.has(oldCadence) ? oldCadence : "off";
+        sampler.value = oldSampler;
+        seedMode.value = oldSeedMode;
+        treatment.value = "off";
+        return true;
+    }
+    // With the corrected append-only order, a workflow saved during the bad
+    // release restores the three refine values but leaves the new tail invalid.
+    if (!treatments.has(String(treatment.value))) {
+        treatment.value = "off";
+        return true;
+    }
+    return false;
 }
 
 function commandId() {
@@ -30,6 +81,7 @@ function syncProjectNode(node, state) {
         duration_seconds: card?.requested_duration_seconds, seed: card?.seed,
         ref_image_size: card?.ref_image_size,
         refine_cadence: state.refine_cadence,
+        continuation_treatment: state.continuation_treatment,
     };
     for (const [name, value] of Object.entries(values)) {
         const item = widget(node, name);
@@ -53,6 +105,7 @@ function syncProjectNode(node, state) {
 
 async function queueAction(node, action) {
     const authority = projectAuthority(node);
+    if (authority) repairContinuationTreatmentWidgetOrder(authority);
     const workspace = authority?.longcasterCardsWorkspace;
     if (workspace && action !== "cancel") {
         if (workspace.loading && !await workspace.loading) return;
@@ -528,7 +581,7 @@ function createCardsWorkspace(node) {
         .lc-studio-tabs{display:flex;gap:5px;padding:7px 14px;background:#0a1925;border-bottom:1px solid #254052}.lc-studio-tab{min-width:110px}.lc-studio-tab.active{background:#0968bd!important;border-color:#1684e6!important}.lc-cards-project{min-height:0;overflow:auto;padding:14px;display:grid;grid-template-columns:minmax(520px,1fr) minmax(340px,520px);gap:14px;align-items:start}.lc-project-panel{min-width:0;background:#0a1824;border:1px solid #20394b;border-radius:7px;padding:12px}.lc-project-panel h2{margin:0 0 5px}.lc-project-identity-source{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;align-items:end;margin-top:12px}.lc-project-identity-source label{display:grid;gap:4px;color:#a9bdca}.lc-project-identity-video{grid-column:1/-1;width:100%;max-height:340px;background:#02070a;border-radius:6px}.lc-project-identity-form{grid-column:1/-1;display:grid;grid-template-columns:minmax(140px,1fr) 110px minmax(180px,1fr) minmax(150px,1fr);gap:7px}.lc-project-identity-form label{display:grid;gap:4px}.lc-project-identity-form .wide{grid-column:1/-1}.lc-project-identity-form textarea{min-height:70px;resize:vertical}
         .lc-cards-main{min-height:0;display:grid;grid-template-columns:260px minmax(620px,1fr) 420px}.lc-cards-sidebar,.lc-cards-preview{min-height:0;overflow:auto;background:#0a1824;padding:10px;border-right:1px solid #20394b}.lc-cards-preview{border-right:0;border-left:1px solid #20394b}
         .lc-cards-list{display:grid;gap:5px}.lc-card-item{display:grid!important;grid-template-columns:34px 1fr;gap:7px;text-align:left;padding:9px!important}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
-        .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}
+        .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}.lc-picture-rail{min-width:0;height:430px;overflow:auto;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:8px;box-sizing:border-box}.lc-picture-rail-heading{display:grid;gap:2px;margin-bottom:8px}.lc-picture-rail-heading small{color:#91aabd}.lc-picture-rail-list{display:grid;gap:8px}.lc-picture-tile{display:grid;gap:3px;padding:7px;background:#0d2130;border:1px solid #29465b;border-radius:6px;overflow:hidden}.lc-picture-tile img,.lc-picture-placeholder{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;background:#02070a}.lc-picture-placeholder{display:grid;place-items:center;color:#718898;font-weight:700}.lc-picture-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lc-picture-tile small{color:#91aabd;line-height:1.25}.lc-picture-tile.inactive{opacity:.55;border-style:dashed}.lc-picture-toggle.active{background:#0968bd!important;border-color:#1684e6!important}
         .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
         .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-project{grid-template-columns:1fr}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
         .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}
@@ -537,6 +590,8 @@ function createCardsWorkspace(node) {
         .lc-prompt-diff-details{margin-top:8px;border:1px solid #29465b;border-radius:5px;background:#07131d}.lc-prompt-diff-details summary{cursor:pointer;padding:8px;color:#b9cbd7}.lc-prompt-diff{max-height:420px;overflow:auto;border-top:1px solid #223f53;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-prompt-diff-row{display:grid;grid-template-columns:42px 42px 18px minmax(0,1fr);white-space:pre-wrap;word-break:break-word;padding:1px 6px}.lc-prompt-diff-row .line-number{color:#607b8d;text-align:right;padding-right:7px;user-select:none}.lc-prompt-diff-row.add{background:#103b2d;color:#c8f2dc}.lc-prompt-diff-row.delete{background:#451f27;color:#ffd0d4}.lc-prompt-diff-empty{padding:9px;color:#91aabd}
         .lc-generation-setup{border-top:1px solid #223f53;padding:8px;display:grid;gap:8px}.lc-generation-group{display:grid;gap:4px}.lc-generation-group>strong{color:#9fc2d8}.lc-generation-item{background:#0d2130;border:1px solid #223f53;border-radius:4px;padding:6px;display:grid;gap:2px}.lc-generation-item small{color:#91aabd;white-space:pre-wrap;word-break:break-word}.lc-generation-stats{color:#91aabd;font-size:11px}.lc-generation-warning{color:#f5bd4d}
         .lc-cards-log{height:132px;min-height:0;overflow-y:auto;overflow-x:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+        @media(max-width:1450px){.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.lc-picture-rail{grid-column:1/-1;height:auto;max-height:240px}.lc-picture-rail-list{grid-template-columns:repeat(auto-fill,minmax(120px,1fr))}}
+        @media(max-width:1250px){.lc-cards-editing.picture-rail-open{grid-template-columns:1fr}.lc-picture-rail{grid-column:auto}}
     `;
     document.head.append(style);
 
@@ -644,6 +699,13 @@ function createCardsWorkspace(node) {
     for (const [value, label] of [["direct_mmh3", "Continue previous card (direct MMH3)"], ["image_restart", "Image restart (previous last frame)"], ["independent", "Independent shot"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; strategy.append(option); }
     strategyField.append(cardsElement("label", "", "Continuation strategy"), strategy);
     strategyField.append(cardsElement("div", "lc-cards-help", "Direct MMH3 preserves the accepted parent’s final 39 joint audio/video latent frames. Image Restart creates a fresh latent and guides frame 0 with the predecessor’s final image. Independent starts without a generation parent."));
+    const treatmentField = cardsElement("div", "lc-cards-field");
+    const treatment = document.createElement("select");
+    for (const [value, label] of [["off", "Off"], ["drift_control", "Drift-Control AV"], ["color_stable", "Drift + Color-Stable AV"]]) {
+        const option = document.createElement("option"); option.value = value; option.textContent = label; treatment.append(option);
+    }
+    treatmentField.append(cardsElement("label", "", "Continuation treatment"), treatment);
+    treatmentField.append(cardsElement("div", "lc-cards-help", "Project-level policy for direct MMH3 continuation. Existing projects default to Off. Color-Stable uses the first card in each continuation chain as its baseline; Card 2 remains neutral."));
     const refImageSizeField = cardsElement("div", "lc-cards-field");
     const refImageSize = document.createElement("select");
     for (const [value, label] of [["match", "Match generation size"], ["max", "Maximum reference size"]]) {
@@ -670,7 +732,19 @@ function createCardsWorkspace(node) {
     const refineEnabled = document.createElement("input"); refineEnabled.type = "checkbox";
     const refineEnabledLabel = cardsElement("label", "lc-refine-check"); refineEnabledLabel.append(refineEnabled, document.createTextNode("Refine enabled for this card"));
     refineEnabledField.append(refineEnabledLabel, cardsElement("div", "lc-cards-help", "Used only in Manual mode. The setting becomes read-only after acceptance."));
-    fields.append(durationField, seedField, modeField, strategyField, refImageSizeField, refineCadenceField, refineEnabledField);
+    fields.append(durationField, seedField, modeField, strategyField, treatmentField, refImageSizeField, refineCadenceField, refineEnabledField);
+    const cardReferenceControls = createCardReferenceControls({
+        assetURL: path => api.apiURL(path),
+        onSettings(settings) {
+            Object.assign(selectedCard().card_reference, settings);
+            markDirty();
+            renderCardReference();
+            renderPictureRail(selectedCard(), viewedTake());
+        },
+        onUpload: (file) => changeCardReference(file),
+        onRemove: () => changeCardReference(null),
+    });
+    fields.append(cardReferenceControls.root);
     const subjectRefine = cardsElement("div", "lc-subject-refine");
     const subjectRefineCadence = makeRefineRadios("subject");
     const subjectRefineEnabled = document.createElement("input"); subjectRefineEnabled.type = "checkbox";
@@ -681,7 +755,9 @@ function createCardsWorkspace(node) {
     const fullPanel = cardsElement("div", "lc-cards-fullpanel");
     const fullBar = cardsElement("div", "lc-cards-fullbar");
     const importFull = cardsElement("button", "", "Paste Full Prompt");
-    fullBar.append(cardsElement("h3", "", "Full Prompt"), importFull);
+    const pictureToggle = cardsElement("button", "lc-picture-toggle", "Pictures");
+    pictureToggle.type = "button";
+    fullBar.append(cardsElement("h3", "", "Full Prompt"), pictureToggle, importFull);
     const fullPrompt = cardsElement("pre", "lc-cards-full");
     const importPanel = cardsElement("section", "lc-cards-section lc-cards-import"); importPanel.hidden = true;
     const importHelp = cardsElement("div", "lc-cards-help", "Paste the plain MiniMax H3 prompt beginning with subject_definitions:. Canonical headings are assigned automatically; unlabelled text goes into Detailed Description. XML is not required.");
@@ -695,7 +771,10 @@ function createCardsWorkspace(node) {
     fullPanel.append(fullBar, fullPrompt, importPanel);
     const sectionColumn = cardsElement("div", "lc-cards-sectioncolumn");
     sectionColumn.append(tabs, section);
-    editing.append(fullPanel, sectionColumn);
+    const pictureRail = createPictureReferenceRail();
+    pictureRail.root.id = `lc-picture-rail-${node.id}`;
+    pictureToggle.setAttribute("aria-controls", pictureRail.root.id);
+    editing.append(fullPanel, sectionColumn, pictureRail.root);
     editor.append(cardHead, editing, legacy, fields);
 
     const preview = cardsElement("aside", "lc-cards-preview");
@@ -799,12 +878,15 @@ function createCardsWorkspace(node) {
     root.append(top, studioNav, main, projectView, executionPanel, footer);
     document.body.append(root);
 
+    let pictureRailOpen = true;
+    try { pictureRailOpen = globalThis.localStorage?.getItem("longcaster.pictureRailOpen") !== "false"; } catch (_) {}
     const workspace = {
         root, node, state: null, selectedCardId: null, selectedSection: CARD_SECTIONS[0][0],
         dirty: false, dirtySections: new Set(), timer: null, saving: null, editVersion: 0,
         loraDirty: false,
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
+        pictureRailOpen,
     };
     node.longcasterCardsWorkspace = workspace;
     node.graph.longcasterProjectAuthority = node;
@@ -812,7 +894,7 @@ function createCardsWorkspace(node) {
     const selectedCard = () => workspace.state?.cards?.find((card) => card.id === workspace.selectedCardId);
     const viewedTake = (card = selectedCard()) => card?.draft_takes?.find((take) => take.id === workspace.viewedTakeId);
     const identitySourceCard = () => workspace.state?.cards?.find((card) => card.id === workspace.identitySourceCardId && card.status === "ACCEPTED");
-    const editable = (card) => Boolean(card && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status));
+    const editable = (card) => Boolean(card && !workspace.referenceBusy && !workspace.state?.pending_operation && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status));
     const setMessage = (value, error = false) => { message.textContent = value; message.className = error ? "lc-cards-error" : ""; };
     const selectedProjectResolution = () => projectResolution(projectAspect.value, projectMegapixels.value);
     const renderProjectResolutionChoice = () => {
@@ -1165,12 +1247,16 @@ function createCardsWorkspace(node) {
         seed.value = String(card.seed ?? 0);
         duration.disabled = !isEditable; seed.disabled = !isEditable;
         refImageSize.value = card.ref_image_size || "match";
+        renderCardReference();
+        renderPictureRail(card, take);
         refImageSize.disabled = !isEditable || state.generation_mode !== "ref2va";
         refImageSize.title = state.generation_mode === "ref2va"
             ? "Choose how REF2VA reference images are sized for this card."
             : "Reference image sizing is used only by REF2VA projects.";
         mode.value = state.generation_mode; mode.disabled = !state.generation_mode_editable;
         mode.title = state.generation_mode_editable ? "Mode can change until the first render." : "Mode is fixed because this project already has rendered media.";
+        treatment.value = state.continuation_treatment || "off";
+        treatment.disabled = Boolean(state.pending_operation);
         const refineMode = state.refine_cadence || "off";
         setRefineRadios(refineCadence, refineMode);
         setRefineRadios(subjectRefineCadence, refineMode);
@@ -1465,6 +1551,102 @@ function createCardsWorkspace(node) {
         return {packetName, resources};
     }
 
+    function renderCardReference() {
+        cardReferenceControls.render({
+            project: workspace.state.project, card: selectedCard(),
+            generationMode: workspace.state.generation_mode,
+            editable: editable(selectedCard()) && !workspace.referenceBusy,
+            observedReferences: workspace.state.observed_reference_set,
+        });
+    }
+
+    function renderPictureRail(card, take) {
+        const live = connectedReferenceResources();
+        const useFrozen = card.status === "ACCEPTED" || Boolean(take && !take.selected);
+        const frozenResources = take?.settings?.references?.resources
+            || card.reference_set?.resources
+            || workspace.state.observed_reference_set?.resources
+            || [];
+        const globalSource = workspace.state.generation_mode !== "ref2va"
+            ? []
+            : (useFrozen || !live.resources.length ? frozenResources : live.resources);
+        const livePictures = live.resources.filter(item => item.kind === "image");
+        const globalPictures = globalSource.filter(item => item.kind === "image").map((item, index) => {
+            const liveItem = !useFrozen ? livePictures[index] : null;
+            const thumbnail = liveItem?.filename
+                ? api.apiURL(`/view?${new URLSearchParams({filename: liveItem.filename, type: "input"})}`)
+                : null;
+            return {
+                label: item.name || item.role || `Project Picture ${index + 1}`,
+                detail: thumbnail ? "project packet" : `project packet · ${shortId(item.id)}`,
+                thumbnail,
+            };
+        });
+        const selectedCardReference = useFrozen
+            ? (take?.settings?.card_reference || card.card_reference_resolved)
+            : card.card_reference;
+        const cardReference = selectedCardReference ? {
+            enabled: Boolean(selectedCardReference.enabled),
+            label: "Card Reference",
+            detail: selectedCardReference.enabled
+                ? `${selectedCardReference.latent_mode}${selectedCardReference.latent_mode === "soften" ? ` · ${Number(selectedCardReference.latent_strength).toFixed(2)}` : ""}`
+                : "Disabled; no prompt number",
+            thumbnail: api.apiURL(`/longcaster/cards/reference?${new URLSearchParams({
+                project: workspace.state.project, card_id: card.id, reference_id: selectedCardReference.id,
+            })}`),
+        } : null;
+        const frozenIdentity = useFrozen
+            ? (take?.settings?.identity_anchor || card.identity_anchor_resolved)
+            : null;
+        const activeIdentity = workspace.state.generation_mode !== "ref2va" ? null : frozenIdentity?.active
+            ? workspace.state.identity_anchors?.find(item => item.anchor_id === frozenIdentity.anchor_id)
+            : (!useFrozen && widget(node, "use_identity_anchor")?.value !== false
+                ? workspace.state.active_identity_anchor : null);
+        const identityReference = activeIdentity && activeIdentity.enabled !== false ? {
+            enabled: true,
+            label: activeIdentity.label || activeIdentity.subject_id || "Identity Anchor",
+            detail: `${activeIdentity.subject_id || "identity"} · Card ${activeIdentity.source_card_number || activeIdentity.source_card_artifact_number || "?"}`,
+            thumbnail: api.apiURL(`/longcaster/cards/anchor?project=${encodeURIComponent(workspace.state.project)}&anchor=${encodeURIComponent(activeIdentity.anchor_id)}`),
+        } : null;
+        const result = assemblePictureReferences({globalPictures, cardReference, identityReference});
+        pictureToggle.textContent = `Pictures (${result.count})`;
+        pictureToggle.classList.toggle("active", workspace.pictureRailOpen);
+        pictureToggle.setAttribute("aria-expanded", String(workspace.pictureRailOpen));
+        editing.classList.toggle("picture-rail-open", workspace.pictureRailOpen);
+        pictureRail.render(result, {
+            open: workspace.pictureRailOpen,
+            sourceNote: useFrozen ? "frozen take" : live.resources.length ? "connected graph" : "last snapshot",
+        });
+    }
+
+    async function changeCardReference(file) {
+        const project = workspace.state.project;
+        const cardId = selectedCard()?.id;
+        if (workspace.referenceBusy || !editable(selectedCard())) return;
+        if (!await flush()) return;
+        if (project !== workspace.state.project || cardId !== selectedCard()?.id) return;
+        const epoch = workspace.loadEpoch;
+        workspace.referenceBusy = true; render();
+        try {
+            let options;
+            if (file) {
+                const body = new FormData();
+                body.append("project", project); body.append("card_id", cardId);
+                body.append("revision", String(workspace.state.revision)); body.append("image", file);
+                options = {method: "POST", body};
+            } else {
+                options = {method: "DELETE", headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify({project, card_id: cardId, revision: workspace.state.revision})};
+            }
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/reference", options));
+            if (project === workspace.state.project && epoch === workspace.loadEpoch) {
+                updateState(body); setMessage(body.message);
+            }
+        } catch (error) {
+            if (project === workspace.state.project && epoch === workspace.loadEpoch) setMessage(`Card reference: ${error.message}`, true);
+        } finally { workspace.referenceBusy = false; render(); }
+    }
+
     function markDirty(sectionNameChanged = null) {
         workspace.dirty = true; workspace.editVersion += 1;
         if (sectionNameChanged) workspace.dirtySections.add(sectionNameChanged);
@@ -1485,6 +1667,7 @@ function createCardsWorkspace(node) {
             sections: Object.fromEntries(changed.map((name) => [name, card.prompt_sections[name].text])),
             duration_seconds: Number(card.requested_duration_seconds), seed: Number(card.seed),
             ref_image_size: card.ref_image_size || "match",
+            card_reference_settings: workspace.state.generation_mode === "ref2va" ? referenceSettings(card.card_reference) : null,
             continuation_strategy: card.continuation_strategy,
             refine_enabled: Boolean(card.refine_enabled),
         };
@@ -1515,6 +1698,7 @@ function createCardsWorkspace(node) {
     }
 
     async function flush() {
+        if (workspace.referenceBusy) { setMessage("Wait for the card reference upload to finish."); return false; }
         if (!await flushCard()) return false;
         if (workspace.loraDirty) return saveProjectLoraWords(true);
         return true;
@@ -1597,6 +1781,7 @@ function createCardsWorkspace(node) {
                     width: resolution.width, height: resolution.height,
                     duration_seconds: Number(newDuration.value), seed: Number(newSeed.value),
                     refine_cadence: String(widget(node, "refine_cadence")?.value || "off"),
+                    continuation_treatment: String(widget(node, "continuation_treatment")?.value || "off"),
                 }),
             }));
             newPanel.hidden = true;
@@ -1704,6 +1889,25 @@ function createCardsWorkspace(node) {
             setRefineRadios(refineCadence, workspace.state.refine_cadence || "off");
             setRefineRadios(subjectRefineCadence, workspace.state.refine_cadence || "off");
             setMessage(`Refine cadence change failed: ${error.message}`, true);
+        }
+    }
+
+    async function saveContinuationTreatment(requested) {
+        if (!await flush()) return;
+        try {
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/project", {
+                method: "PATCH", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    project: workspace.state.project,
+                    revision: workspace.state.revision,
+                    generation_mode: workspace.state.generation_mode,
+                    continuation_treatment: requested,
+                }),
+            }));
+            updateState(body); setMessage("Continuation treatment saved.");
+        } catch (error) {
+            treatment.value = workspace.state.continuation_treatment || "off";
+            setMessage(`Continuation treatment change failed: ${error.message}`, true);
         }
     }
 
@@ -1931,8 +2135,14 @@ function createCardsWorkspace(node) {
     duration.oninput = () => { selectedCard().requested_duration_seconds = Number(duration.value); markDirty(); };
     seed.oninput = () => { selectedCard().seed = Number(seed.value); markDirty(); };
     refImageSize.onchange = () => { selectedCard().ref_image_size = refImageSize.value; markDirty(); };
+    pictureToggle.onclick = () => {
+        workspace.pictureRailOpen = !workspace.pictureRailOpen;
+        try { globalThis.localStorage?.setItem("longcaster.pictureRailOpen", String(workspace.pictureRailOpen)); } catch (_) {}
+        render();
+    };
     strategy.onchange = () => { selectedCard().continuation_strategy = strategy.value; markDirty(); };
     mode.onchange = () => saveProjectMode();
+    treatment.onchange = () => saveContinuationTreatment(treatment.value);
     projectAspect.onchange = () => renderProjectResolutionChoice();
     projectMegapixels.oninput = () => renderProjectResolutionChoice();
     saveProjectResolution.onclick = () => saveResolution();
@@ -2163,6 +2373,13 @@ app.registerExtension({
             this.addWidget("button", "Append Card", null, () => queueAction(this, "append"));
             const computed = this.computeSize?.();
             this.setSize([Math.max(this.size[0], 360), Math.max(this.size[1], computed?.[1] ?? this.size[1])]);
+            return result;
+        };
+
+        const originalConfigured = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function () {
+            const result = originalConfigured?.apply(this, arguments);
+            repairContinuationTreatmentWidgetOrder(this);
             return result;
         };
 

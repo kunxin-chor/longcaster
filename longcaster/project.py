@@ -28,11 +28,12 @@ from .prompt_sections import (
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
 CONTINUATION_STRATEGIES = {"independent", "direct_mmh3", "image_restart"}
+CONTINUATION_TREATMENTS = {"off", "drift_control", "color_stable"}
 REF_IMAGE_SIZES = {"match", "max"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
@@ -47,6 +48,13 @@ _RUNTIME_ID = str(uuid.uuid4())
 
 class ProjectError(RuntimeError):
     pass
+
+
+def validate_continuation_treatment(value: str) -> str:
+    treatment = str(value)
+    if treatment not in CONTINUATION_TREATMENTS:
+        raise ValueError("continuation treatment must be off, drift_control, or color_stable")
+    return treatment
 
 
 def validate_lora_activation_words(value: str) -> str:
@@ -159,8 +167,9 @@ def _new_card(
         if parent_id
         else None
     )
+    card_id = str(uuid.uuid4())
     return {
-        "id": str(uuid.uuid4()),
+        "id": card_id,
         "timeline_index": timeline_index,
         "artifact_number": artifact_number,
         "generation_parent_id": parent_id,
@@ -174,9 +183,11 @@ def _new_card(
         "continuation_strategy": "direct_mmh3" if parent_id else "independent",
         "continuation_source": continuation_source,
         "continuation_source_preference": "accepted_master",
+        "color_anchor_source_card_id": parent_id or card_id,
         "refine_enabled": False,
         "derivatives": [],
         "reference_set": None,
+        "card_reference": None,
         "accepted_publication_id": None,
         "draft_inputs_dirty": False,
         "draft_takes": [],
@@ -218,8 +229,10 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
         "requested_duration_seconds": card.get("requested_duration_seconds"),
         "seed": card.get("seed"),
         "ref_image_size": card.get("ref_image_size", "match"),
+        "card_reference": deepcopy(card.get("card_reference")),
         "continuation_strategy": card.get("continuation_strategy"),
         "continuation_source": deepcopy(card.get("continuation_source")),
+        "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
         "recipe": deepcopy(card.get("recipe")),
         "generation_fingerprint": card.get("generation_fingerprint"),
         "reference_set": deepcopy(card.get("reference_set")),
@@ -243,8 +256,10 @@ def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
         "requested_duration_seconds": take["requested_duration_seconds"],
         "seed": take["seed"],
         "ref_image_size": take.get("ref_image_size", "match"),
+        "card_reference": deepcopy(take.get("card_reference")),
         "continuation_strategy": take["continuation_strategy"],
         "continuation_source": deepcopy(take.get("continuation_source")),
+        "color_anchor_source_card_id": take.get("color_anchor_source_card_id"),
         "recipe": deepcopy(take["recipe"]),
         "generation_fingerprint": take["generation_fingerprint"],
         "reference_set": deepcopy(take.get("reference_set")),
@@ -290,6 +305,7 @@ class ProjectStore:
         height: int,
         generation_mode: str,
         refine_cadence: str = "off",
+        continuation_treatment: str = "off",
         lora_activation_words: str = "",
     ) -> dict[str, Any]:
         if generation_mode not in GENERATION_MODES:
@@ -297,6 +313,10 @@ class ProjectStore:
         try:
             refine_cadence = validate_refine_cadence(refine_cadence)
         except RuntimeError as exc:
+            raise ProjectError(str(exc)) from exc
+        try:
+            continuation_treatment = validate_continuation_treatment(continuation_treatment)
+        except ValueError as exc:
             raise ProjectError(str(exc)) from exc
         lora_activation_words = validate_lora_activation_words(lora_activation_words)
         width = int(width)
@@ -331,6 +351,7 @@ class ProjectStore:
                 "updated_at": now,
                 "generation_mode": generation_mode,
                 "refine_cadence": refine_cadence,
+                "continuation_treatment": continuation_treatment,
                 "lora_activation_words": lora_activation_words,
                 "width": width,
                 "height": height,
@@ -406,6 +427,16 @@ class ProjectStore:
             if card["status"] not in expected:
                 label = "EMPTY, FAILED, or INVALIDATED" if action == "generate" else "DRAFT"
                 raise ProjectError(f"{action} requires a {label} card; current state is {card['status']}")
+            reference = card.get("card_reference")
+            frozen_reference = recipe.get("card_reference")
+            if reference is not None or frozen_reference is not None:
+                if reference is None or frozen_reference is None or any(
+                    reference.get(key) != frozen_reference.get(key)
+                    for key in ("id", "asset_path", "asset_sha256", "enabled", "latent_mode", "latent_strength")
+                ):
+                    raise ProjectError("card reference changed while preparing generation; retry")
+                if reference["enabled"] and manifest["generation_mode"] != "ref2va":
+                    raise ProjectError("card references require REF2VA")
             operation_id = str(uuid.uuid4())
             operation = {
                 "id": operation_id,
@@ -417,6 +448,7 @@ class ProjectStore:
                 "owner_pid": os.getpid(),
                 "previous_card_status": card["status"],
                 "candidate": {
+                    "card_reference": deepcopy(card.get("card_reference")),
                     "prompt": prompt,
                     "requested_duration_seconds": float(duration_seconds),
                     "seed": int(seed),
@@ -463,6 +495,7 @@ class ProjectStore:
             ) + 1
             card.update({
                 "prompt": candidate_prompt,
+                "card_reference": deepcopy(candidate.get("card_reference")),
                 "requested_duration_seconds": candidate.get(
                     "requested_duration_seconds", card["requested_duration_seconds"]
                 ),
@@ -678,6 +711,7 @@ class ProjectStore:
                 "prompt_hash": card.get("prompt_hash"),
                 "seed": card.get("seed"),
                 "ref_image_size": card.get("ref_image_size", "match"),
+                "card_reference": deepcopy(card.get("card_reference")),
                 "requested_duration_seconds": card.get("requested_duration_seconds"),
                 "actual_duration_seconds": card.get("actual_duration_seconds"),
                 "continuation_strategy": card.get("continuation_strategy"),
@@ -686,6 +720,7 @@ class ProjectStore:
                 "recipe": deepcopy(card.get("recipe")),
                 "derivatives": [],
                 "continuation_source_preference": "accepted_master",
+                "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
             })
             for publication in history:
                 publication["derivatives"] = []
@@ -790,6 +825,28 @@ class ProjectStore:
                     "kind": "set_refine_cadence",
                     "status": "complete",
                     "ended_at": utc_now(),
+                }
+                self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def set_continuation_treatment(self, treatment: str) -> dict[str, Any]:
+        try:
+            treatment = validate_continuation_treatment(treatment)
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from exc
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot change continuation treatment while an operation is pending")
+            if manifest.get("continuation_treatment", "off") != treatment:
+                manifest["continuation_treatment"] = treatment
+                active = self._active_card(manifest)
+                if active.get("status") == "DRAFT":
+                    active["draft_inputs_dirty"] = True
+                    active["updated_at"] = utc_now()
+                manifest["last_operation"] = {
+                    "id": str(uuid.uuid4()), "kind": "set_continuation_treatment",
+                    "status": "complete", "ended_at": utc_now(),
                 }
                 self._commit_unlocked(manifest)
             return deepcopy(manifest)
@@ -950,7 +1007,7 @@ class ProjectStore:
             card = self._active_card(manifest)
             if card is not manifest["cards"][-1]:
                 raise ProjectError("only the active last card can be removed")
-            if card["status"] not in {"EMPTY", "DRAFT", "FAILED"}:
+            if card["status"] not in {"EMPTY", "DRAFT", "FAILED", "INVALIDATED"}:
                 raise ProjectError(
                     f"remove draft requires an unaccepted card; current state is {card['status']}"
                 )
@@ -1028,6 +1085,7 @@ class ProjectStore:
                 f"anchors/{removed_card_id}",
                 f"anchor_candidates/{removed_card_id}",
                 f"derivatives/{removed_card_id}",
+                f"card_references/{removed_card_id}",
             ):
                 try:
                     shutil.rmtree(self.absolute_path(relative_directory), ignore_errors=True)
@@ -1643,6 +1701,101 @@ class ProjectStore:
     def card(self, manifest: dict[str, Any], card_id: str) -> dict[str, Any]:
         return deepcopy(self._card(manifest, card_id))
 
+    def observe_reference_packet(self, references: dict[str, Any] | None) -> dict[str, Any]:
+        """Record graph-resolved ordering and block acceptance of stale card inputs."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            if manifest.get("pending_operation"):
+                return deepcopy(manifest)
+            changed = manifest.get("observed_reference_set") != references
+            manifest["observed_reference_set"] = deepcopy(references)
+            card = self._active_card(manifest)
+            if card["status"] == "DRAFT" and (card.get("card_reference") or {}).get("enabled"):
+                expected = (card.get("recipe") or {}).get("references") or {}
+                observed = references or {}
+                if any(expected.get(key) != observed.get(key) for key in ("packet_id", "resources")):
+                    changed = changed or not card.get("draft_inputs_dirty")
+                    card["draft_inputs_dirty"] = True
+            if changed:
+                self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def update_card_reference(
+        self, *, card_id: str, expected_revision: int, image_bytes: bytes | None = None,
+        settings: dict[str, Any] | None = None, remove: bool = False,
+    ) -> dict[str, Any]:
+        """Persist immutable PNG inputs; old takes retain their original images."""
+        from .card_reference import validate_reference
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            card = self._card(manifest, card_id)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot edit a card reference while an operation is pending")
+            if card_id != manifest.get("active_card_id") or card["status"] not in {"EMPTY", "DRAFT", "FAILED", "INVALIDATED"}:
+                raise ProjectError("only the active unaccepted card reference is editable")
+            if manifest["generation_mode"] != "ref2va" and not remove:
+                raise ProjectError("card references are available only in REF2VA")
+            if remove and (image_bytes is not None or settings):
+                raise ProjectError("remove cannot be combined with reference edits")
+            previous = deepcopy(card.get("card_reference"))
+            reference = deepcopy(previous)
+            new_path = None
+            if image_bytes is not None:
+                import io
+                from PIL import Image, ImageOps
+                if len(image_bytes) > 32 * 1024 * 1024:
+                    raise ProjectError("card reference upload exceeds 32 MiB")
+                try:
+                    with Image.open(io.BytesIO(image_bytes)) as source:
+                        if source.width * source.height > 32_000_000:
+                            raise ProjectError("card reference exceeds 32 million pixels")
+                        image = ImageOps.exif_transpose(source).convert("RGB")
+                except (OSError, ValueError, Image.DecompressionBombError) as exc:
+                    raise ProjectError("card reference must be a readable image") from exc
+                reference_id = str(uuid.uuid4())
+                new_path = self.absolute_path(f"card_references/{card_id}/{reference_id}.png")
+                reference = {
+                    "id": reference_id, "asset_path": self.relative_path(new_path),
+                    "asset_sha256": "0" * 64, "enabled": True,
+                    "latent_mode": "normal", "latent_strength": 1.0,
+                }
+            if remove:
+                reference = None
+            if settings is not None:
+                if not isinstance(settings, dict) or set(settings) - {"enabled", "latent_mode", "latent_strength"}:
+                    raise ProjectError("invalid card reference settings")
+                if reference is None:
+                    raise ProjectError("add a card reference image before changing its settings")
+                reference.update(settings)
+            try:
+                validate_reference(reference, card_id)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ProjectError(str(exc)) from exc
+            if new_path is not None:
+                new_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = new_path.with_suffix(".tmp")
+                try:
+                    with temporary.open("xb") as handle:
+                        image.save(handle, format="PNG")
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    os.replace(temporary, new_path)
+                    reference["asset_sha256"] = sha256_file(new_path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+            card["card_reference"] = reference
+            if card["status"] == "DRAFT" and previous != reference:
+                card["draft_inputs_dirty"] = True
+            card["updated_at"] = utc_now()
+            try:
+                self._commit_unlocked(manifest)
+            except Exception:
+                if new_path is not None:
+                    new_path.unlink(missing_ok=True)
+                raise
+            return deepcopy(manifest)
+
     def update_card_editor(
         self,
         *,
@@ -1653,6 +1806,7 @@ class ProjectStore:
         duration_seconds: float | None = None,
         seed: int | None = None,
         ref_image_size: str | None = None,
+        card_reference_settings: dict[str, Any] | None = None,
         continuation_strategy: str | None = None,
         refine_enabled: bool | None = None,
         convert_legacy: bool = False,
@@ -1673,7 +1827,19 @@ class ProjectStore:
             previous_inputs = (
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
+                deepcopy(card.get("card_reference")), card.get("color_anchor_source_card_id"),
             )
+            if card_reference_settings is not None:
+                from .card_reference import validate_reference
+                if manifest["generation_mode"] != "ref2va" or card.get("card_reference") is None:
+                    raise ProjectError("card reference settings require an existing REF2VA card image")
+                if not isinstance(card_reference_settings, dict) or set(card_reference_settings) - {"enabled", "latent_mode", "latent_strength"}:
+                    raise ProjectError("invalid card reference settings")
+                card["card_reference"].update(card_reference_settings)
+                try:
+                    validate_reference(card["card_reference"], card_id)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProjectError(str(exc)) from exc
 
             changes = section_changes or {}
             clears = clear_sections or []
@@ -1756,13 +1922,19 @@ class ProjectStore:
                         if strategy == "direct_mmh3"
                         else None
                     )
+                    card["color_anchor_source_card_id"] = (
+                        predecessor.get("color_anchor_source_card_id", predecessor_id)
+                        if strategy == "direct_mmh3" else card["id"]
+                    )
                 else:
                     card["generation_parent_id"] = None
                     card["continuation_source"] = None
+                    card["color_anchor_source_card_id"] = card["id"]
                 card["continuation_strategy"] = strategy
             if card["status"] == "DRAFT" and previous_inputs != (
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
+                card.get("card_reference"), card.get("color_anchor_source_card_id"),
             ):
                 card["draft_inputs_dirty"] = True
             card["updated_at"] = utc_now()
@@ -1775,6 +1947,7 @@ class ProjectStore:
         expected_revision: int,
         generation_mode: str,
         refine_cadence: str | None = None,
+        continuation_treatment: str | None = None,
         lora_activation_words: str | None = None,
         width: int | None = None,
         height: int | None = None,
@@ -1785,6 +1958,8 @@ class ProjectStore:
             self._require_revision(manifest, expected_revision)
             if generation_mode not in GENERATION_MODES:
                 raise ProjectError("generation_mode must be ref2va or t2va")
+            if generation_mode == "t2va" and any((card.get("card_reference") or {}).get("enabled") for card in manifest["cards"]):
+                raise ProjectError("disable or remove card references before switching to T2VA")
             try:
                 cadence = validate_refine_cadence(
                     manifest.get("refine_cadence", "off")
@@ -1792,6 +1967,13 @@ class ProjectStore:
                     else refine_cadence
                 )
             except RuntimeError as exc:
+                raise ProjectError(str(exc)) from exc
+            try:
+                treatment = validate_continuation_treatment(
+                    manifest.get("continuation_treatment", "off")
+                    if continuation_treatment is None else continuation_treatment
+                )
+            except ValueError as exc:
                 raise ProjectError(str(exc)) from exc
             activation_words = validate_lora_activation_words(
                 manifest.get("lora_activation_words", "")
@@ -1830,6 +2012,15 @@ class ProjectStore:
                 changed = True
             if cadence != manifest.get("refine_cadence"):
                 manifest["refine_cadence"] = cadence
+                changed = True
+            if treatment != manifest.get("continuation_treatment", "off"):
+                if manifest.get("pending_operation"):
+                    raise ProjectError("cannot change continuation treatment while an operation is pending")
+                manifest["continuation_treatment"] = treatment
+                active = self._active_card(manifest)
+                if active.get("status") == "DRAFT":
+                    active["draft_inputs_dirty"] = True
+                    active["updated_at"] = utc_now()
                 changed = True
             if resolution_changed:
                 manifest["width"] = requested_width
@@ -1936,6 +2127,9 @@ class ProjectStore:
                 ref_image_size=current.get("ref_image_size", "match"),
             )
             card["continuation_source"] = self._preferred_source(current)
+            card["color_anchor_source_card_id"] = current.get(
+                "color_anchor_source_card_id", current["id"]
+            )
             if not prompt:
                 source_sections = (
                     current["prompt_sections"]
@@ -2084,6 +2278,15 @@ class ProjectStore:
         errors: list[str] = []
         for card in manifest["cards"]:
             validated_artifacts: set[tuple[str, str | None]] = set()
+            for record in [card, *card.get("draft_takes", []), *card.get("publication_history", [])]:
+                reference = record.get("card_reference")
+                if reference:
+                    try:
+                        path = self.absolute_path(reference["asset_path"])
+                        if not path.is_file() or sha256_file(path) != reference["asset_sha256"]:
+                            errors.append(f"card {card['artifact_number']}: missing or corrupt card reference")
+                    except ProjectError as exc:
+                        errors.append(str(exc))
             relative = card.get("master_path") if card["status"] == "ACCEPTED" else card.get("draft_path")
             if relative:
                 validated_artifacts.add((relative, card.get("artifact_sha256")))
@@ -2204,6 +2407,8 @@ class ProjectStore:
             raise ProjectError("project generation_mode must be ref2va or t2va")
         if manifest.get("refine_cadence") not in REFINE_CADENCES:
             raise ProjectError("project has an invalid refine_cadence")
+        if manifest.get("continuation_treatment") not in CONTINUATION_TREATMENTS:
+            raise ProjectError("project has an invalid continuation_treatment")
         width = manifest.get("width")
         height = manifest.get("height")
         if (
@@ -2264,6 +2469,21 @@ class ProjectStore:
                 raise ProjectError("card prompt_hash does not match assembled_prompt")
             if card.get("continuation_strategy") not in CONTINUATION_STRATEGIES:
                 raise ProjectError("card has an invalid continuation_strategy")
+            color_anchor_id = card.get("color_anchor_source_card_id")
+            if color_anchor_id not in ids:
+                raise ProjectError("card color baseline must identify itself or an earlier card")
+            if card.get("continuation_strategy") in {"independent", "image_restart"}:
+                if color_anchor_id != card.get("id"):
+                    raise ProjectError("fresh-shot cards must establish their own color baseline")
+            else:
+                ancestor_id = parent_id
+                ancestors = set()
+                while ancestor_id is not None:
+                    ancestors.add(ancestor_id)
+                    ancestor = next(item for item in cards if item.get("id") == ancestor_id)
+                    ancestor_id = ancestor.get("generation_parent_id")
+                if color_anchor_id not in ancestors:
+                    raise ProjectError("direct continuation color baseline must be an ancestor")
             if card.get("ref_image_size") not in REF_IMAGE_SIZES:
                 raise ProjectError("card ref_image_size must be match or max")
             if card.get("continuation_strategy") == "independent" and parent_id is not None:
@@ -2299,6 +2519,12 @@ class ProjectStore:
                 raise ProjectError("card has an invalid continuation source preference")
             if card.get("reference_set") is not None and not isinstance(card.get("reference_set"), dict):
                 raise ProjectError("card reference_set must be an object or null")
+            from .card_reference import validate_reference
+            for record in [card, *card.get("draft_takes", []), *card.get("publication_history", [])]:
+                try:
+                    validate_reference(record.get("card_reference"), card["id"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProjectError(f"invalid card reference: {exc}") from exc
             if not isinstance(card.get("draft_inputs_dirty"), bool):
                 raise ProjectError("card draft_inputs_dirty must be boolean")
             if not isinstance(card.get("refine_enabled"), bool):
@@ -2381,7 +2607,9 @@ class ProjectStore:
                     for field in (
                         "prompt", "prompt_format", "prompt_sections", "assembled_prompt",
                         "prompt_hash", "requested_duration_seconds", "seed",
-                        "continuation_strategy", "continuation_source", "recipe",
+                        "card_reference",
+                        "continuation_strategy", "continuation_source",
+                        "color_anchor_source_card_id", "recipe",
                         "generation_fingerprint", "reference_set", "context_frame_count",
                         "generated_frame_count", "actual_new_frame_count", "actual_duration_seconds",
                     ):
@@ -2541,10 +2769,12 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
+        color_anchors: dict[str, str] = {}
         for card in manifest.get("cards", []):
+            card.setdefault("card_reference", None)
             card.setdefault("anchors", [])
             card.setdefault("publication_history", [])
             card.setdefault("timeline_predecessor_id", previous_id)
@@ -2566,6 +2796,13 @@ class ProjectStore:
             card.setdefault("derivatives", [])
             card.setdefault("refine_enabled", False)
             card.setdefault("continuation_source_preference", "accepted_master")
+            parent_id = card.get("generation_parent_id")
+            card.setdefault(
+                "color_anchor_source_card_id",
+                color_anchors.get(parent_id, parent_id)
+                if card.get("continuation_strategy") == "direct_mmh3" and parent_id
+                else card.get("id"),
+            )
             card.setdefault(
                 "continuation_source",
                 ({
@@ -2598,6 +2835,8 @@ class ProjectStore:
                     card["draft_takes"].append(take)
                     card["selected_draft_take_id"] = take["id"]
             for take in card.get("draft_takes", []):
+                take.setdefault("card_reference", None)
+                take.setdefault("color_anchor_source_card_id", card["color_anchor_source_card_id"])
                 take_recipe = take.get("recipe") or {}
                 take_ref_image_size = (
                     take_recipe.get("ref_image_size") if isinstance(take_recipe, dict) else None
@@ -2613,8 +2852,10 @@ class ProjectStore:
                     anchor.setdefault("identity_scope", "face_only")
                     anchor.setdefault("custom_identity_instruction", None)
             previous_id = card.get("id")
+            color_anchors[card["id"]] = card["color_anchor_source_card_id"]
         manifest.setdefault("active_identity_anchors", {})
         manifest.setdefault("refine_cadence", "off")
+        manifest.setdefault("continuation_treatment", "off")
         manifest.setdefault("lora_activation_words", "")
         manifest["schema_version"] = SCHEMA_VERSION
         return True

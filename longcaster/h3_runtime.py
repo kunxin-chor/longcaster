@@ -42,12 +42,17 @@ def build_conditioning(
     reference_packet: Any | None,
     ref_image_size: str,
     additional_reference_images: dict[str, Any] | None = None,
+    card_reference: dict[str, Any] | None = None,
+    card_reference_image: Any | None = None,
 ) -> tuple[Any, dict[str, Any], dict[str, Any] | None]:
     from comfy_extras.nodes_minimax_h3 import (
         MiniMaxH3ImageToVideo,
         MiniMaxH3ReferenceToVideo,
     )
 
+    card_enabled = bool(card_reference and card_reference.get("enabled"))
+    if card_enabled and reference_packet is None:
+        raise ValueError("card references require REF2VA and a reference packet")
     if reference_packet is None and not additional_reference_images:
         output = MiniMaxH3ImageToVideo.execute(
             clip, video_vae, prompt, int(width), int(height), int(frames)
@@ -63,27 +68,38 @@ def build_conditioning(
         ref_image_size=ref_image_size,
     )
     images = dict(references.images)
+    card_vae = None
+    if card_enabled:
+        from .card_reference import CachedCardVAE
+        picture_index = 1 + sum(image is not None for image in images.values())
+        if card_reference_image is None or picture_index != card_reference["resolved_picture_index"]:
+            raise ValueError("card reference image or resolved native picture index is inconsistent")
+        images[f"ref_image_{len(images)}_card"] = card_reference_image
+        card_vae = CachedCardVAE(video_vae, card_reference, picture_index)
     for name, image in (additional_reference_images or {}).items():
         images[f"ref_image_{len(images)}_{name}"] = image
     if len(images) > 9:
-        raise ValueError("MiniMax H3 supports at most 9 image references including the identity anchor")
+        raise ValueError("MiniMax H3 supports at most 9 image references including card references and the identity anchor")
     output = MiniMaxH3ReferenceToVideo.execute(
-        clip,
-        video_vae,
-        audio_vae,
-        prompt,
-        int(width),
-        int(height),
-        int(frames),
-        ref_image_size,
-        images,
-        references.videos,
-        references.video_audios,
-        references.audios,
+        clip=clip, vae=card_vae if card_vae is not None else video_vae,
+        audio_vae=audio_vae, prompt=prompt, width=int(width), height=int(height),
+        length=int(frames), ref_image_size=ref_image_size, ref_images=images,
+        ref_videos=references.videos, ref_video_audios=references.video_audios,
+        ref_audios=references.audios,
     )
+    positive = output[0]
+    if card_vae is not None:
+        from .card_reference import substitute_card_latent
+        positive = substitute_card_latent(
+            positive, picture_index=card_reference["resolved_picture_index"],
+            clean=card_vae.clean, mode=card_reference["latent_mode"],
+            strength=card_reference["latent_strength"],
+        )
     report = dict(references.report)
     report["longcaster_additional_reference_images"] = len(additional_reference_images or {})
-    return output[0], output[1], report
+    if card_reference is not None:
+        report["card_reference"] = dict(card_reference)
+    return positive, output[1], report
 
 
 def sample_h3(

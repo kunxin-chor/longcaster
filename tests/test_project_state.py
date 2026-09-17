@@ -57,6 +57,37 @@ class ProjectStateInputTests(unittest.TestCase):
         with self.assertRaisesRegex(self.nodes.ProjectError, "does not identify"):
             self.nodes._project_from_state("fallback", "{}")
 
+    def test_new_project_widgets_are_appended_after_legacy_refine_widgets(self):
+        samplers = types.ModuleType("comfy.samplers")
+        samplers.SCHEDULER_NAMES = ["normal"]
+        samplers.SAMPLER_NAMES = ["euler"]
+        comfy = types.ModuleType("comfy")
+        comfy.samplers = samplers
+        with patch.dict(sys.modules, {"comfy": comfy, "comfy.samplers": samplers}):
+            required = self.nodes.LongCasterProject.INPUT_TYPES()["required"]
+        self.assertEqual(
+            list(required)[-4:],
+            ["refine_cadence", "refine_sampler_name", "refine_seed_mode", "continuation_treatment"],
+        )
+        sampler_choices = required["refine_sampler_name"][0]
+        self.assertIn("manual", sampler_choices)
+        self.assertNotIn("manual", list(sampler_choices))
+
+    def test_displaced_refine_values_normalize_before_project_actions(self):
+        normalize = self.nodes._normalize_shifted_treatment_widgets
+        self.assertEqual(
+            normalize("off", "manual", "inherit", "off", ["euler", "dpmpp_2m"]),
+            ("manual", "euler", "inherit", "off"),
+        )
+        self.assertEqual(
+            normalize("off", "manual", "euler", "inherit", ["euler", "dpmpp_2m"]),
+            ("manual", "euler", "inherit", "off"),
+        )
+        self.assertEqual(
+            normalize("euler", "inherit", "inherit", "manual", ["euler", "dpmpp_2m"]),
+            ("manual", "euler", "inherit", "off"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

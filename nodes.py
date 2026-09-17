@@ -13,7 +13,10 @@ import folder_paths
 from comfy_execution.graph_utils import ExecutionBlocker
 
 from .longcaster.duration import H3_CONTINUATION_CONTEXT_FRAMES, resolve_duration
-from .longcaster.continuation import DIRECT_LATENT_CONTINUATION
+from .longcaster.continuation import (
+    DIRECT_LATENT_CONTINUATION,
+    prepare_continuation_policy,
+)
 from .longcaster.fingerprint import generation_fingerprint
 from .longcaster.h3_runtime import (
     build_conditioning,
@@ -60,6 +63,55 @@ from .longcaster.timeline_export import export_timeline_nvenc
 
 LOGGER = logging.getLogger("longcaster")
 
+_REFINE_CADENCES = {"off", "every_accepted_card", "manual"}
+_REFINE_SEED_MODES = {"inherit", "offset"}
+_CONTINUATION_TREATMENTS = {"off", "drift_control", "color_stable"}
+
+
+class _CompatibilityChoices(list):
+    """Expose canonical combo entries while accepting displaced legacy values."""
+
+    def __init__(self, values, aliases=()):
+        super().__init__(values)
+        self._aliases = frozenset(str(value) for value in aliases)
+
+    def __contains__(self, value):
+        return super().__contains__(value) or str(value) in self._aliases
+
+
+def _normalize_shifted_treatment_widgets(
+    refine_cadence, refine_sampler_name, refine_seed_mode, continuation_treatment,
+    sampler_names,
+):
+    """Undo either positional layout produced by the initial treatment release."""
+    cadence = str(refine_cadence)
+    sampler = str(refine_sampler_name)
+    seed_mode = str(refine_seed_mode)
+    treatment = str(continuation_treatment)
+    samplers = set(str(value) for value in sampler_names)
+    if sampler in _REFINE_CADENCES:
+        return (
+            sampler,
+            seed_mode if seed_mode in samplers else "euler",
+            treatment if treatment in _REFINE_SEED_MODES
+            else seed_mode if seed_mode in _REFINE_SEED_MODES else "inherit",
+            treatment if treatment in _CONTINUATION_TREATMENTS
+            else cadence if cadence in _CONTINUATION_TREATMENTS else "off",
+        )
+    if sampler in _REFINE_SEED_MODES and cadence in samplers:
+        return (
+            treatment if treatment in _REFINE_CADENCES else "off",
+            cadence,
+            sampler,
+            "off",
+        )
+    return (
+        cadence if cadence in _REFINE_CADENCES else "off",
+        sampler if sampler in samplers else "euler",
+        seed_mode if seed_mode in _REFINE_SEED_MODES else "inherit",
+        treatment if treatment in _CONTINUATION_TREATMENTS else "off",
+    )
+
 
 def _projects_root() -> Path:
     return Path(folder_paths.get_output_directory()) / "longcaster_projects"
@@ -98,6 +150,7 @@ def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict
         "project": manifest["project_name"],
         "revision": manifest["revision"],
         "generation_mode": manifest["generation_mode"],
+        "continuation_treatment": manifest.get("continuation_treatment", "off"),
         "width": manifest["width"],
         "height": manifest["height"],
         "active_card": card,
@@ -152,6 +205,8 @@ class LongCasterProject:
     def INPUT_TYPES(cls):
         import comfy.samplers
 
+        sampler_names = list(comfy.samplers.SAMPLER_NAMES)
+
         return {
             "required": {
                 "model": ("MODEL",),
@@ -195,11 +250,32 @@ class LongCasterProject:
                 "reinforce_state_prompt": ("BOOLEAN", {"default": True}),
                 "use_identity_anchor": ("BOOLEAN", {"default": True}),
                 "refine_cadence": (
-                    ["off", "every_accepted_card", "manual"],
+                    _CompatibilityChoices(
+                        ["off", "every_accepted_card", "manual"],
+                        aliases=[*sampler_names, "drift_control", "color_stable"],
+                    ),
                     {"default": "off"},
                 ),
-                "refine_sampler_name": (comfy.samplers.SAMPLER_NAMES, {"default": "euler"}),
-                "refine_seed_mode": (["inherit", "offset"], {"default": "inherit"}),
+                "refine_sampler_name": (
+                    _CompatibilityChoices(
+                        sampler_names,
+                        aliases=["off", "every_accepted_card", "manual", "inherit", "offset"],
+                    ),
+                    {"default": "euler"},
+                ),
+                "refine_seed_mode": (
+                    _CompatibilityChoices(["inherit", "offset"], aliases=sampler_names),
+                    {"default": "inherit"},
+                ),
+                # Append new widgets after all legacy required inputs. ComfyUI
+                # persists widget values positionally in workflows.
+                "continuation_treatment": (
+                    _CompatibilityChoices(
+                        ["off", "drift_control", "color_stable"],
+                        aliases=["inherit", "offset", "every_accepted_card", "manual"],
+                    ),
+                    {"default": "off"},
+                ),
             },
             "optional": {
                 "sigmas": ("SIGMAS",),
@@ -253,6 +329,7 @@ class LongCasterProject:
         refine_cadence="off",
         refine_sampler_name="euler",
         refine_seed_mode="inherit",
+        continuation_treatment="off",
         sigmas=None,
         reference_packet=None,
         refine_sigmas=None,
@@ -260,6 +337,28 @@ class LongCasterProject:
         prompt_graph=None,
         unique_id=None,
     ):
+        import comfy.samplers
+
+        original_refine_widgets = (
+            str(refine_cadence), str(refine_sampler_name),
+            str(refine_seed_mode), str(continuation_treatment),
+        )
+        (
+            refine_cadence, refine_sampler_name,
+            refine_seed_mode, continuation_treatment,
+        ) = _normalize_shifted_treatment_widgets(
+            *original_refine_widgets,
+            sampler_names=comfy.samplers.SAMPLER_NAMES,
+        )
+        if original_refine_widgets != (
+            refine_cadence, refine_sampler_name,
+            refine_seed_mode, continuation_treatment,
+        ):
+            LOGGER.warning(
+                "LongCaster repaired displaced continuation/refine widgets: %s -> %s",
+                original_refine_widgets,
+                (refine_cadence, refine_sampler_name, refine_seed_mode, continuation_treatment),
+            )
         store = ProjectStore(_projects_root(), project_name)
         if not store.manifest_path.exists():
             manifest = store.create(
@@ -270,6 +369,7 @@ class LongCasterProject:
                 height=height,
                 generation_mode=generation_mode,
                 refine_cadence=refine_cadence,
+                continuation_treatment=continuation_treatment,
             )
         else:
             manifest = store.load()
@@ -287,11 +387,18 @@ class LongCasterProject:
                 f"project mode is fixed at {manifest['generation_mode']}; the node requested {generation_mode}"
             )
         manifest = store.set_refine_cadence(refine_cadence)
+        manifest = store.set_continuation_treatment(continuation_treatment)
+        if action in {"generate", "retry", "accept", "resume"} and any(
+            card.get("card_reference") for card in manifest["cards"]
+        ):
+            manifest = store.observe_reference_packet(reference_snapshot(reference_packet))
         if action == "resume":
             return self._result(None, None, _status(manifest, store, "Project resumed."), store)
 
         if action == "accept":
             draft_card = store.active_card(manifest)
+            if draft_card.get("draft_inputs_dirty"):
+                raise ProjectError("draft inputs changed; Retry Draft before accepting")
             anchor = cached_last_frame_anchor(store, draft_card)
             if anchor is None:
                 draft_packet, _ = _packet_for_card(store, draft_card)
@@ -453,6 +560,9 @@ class LongCasterProject:
             raise ProjectError("PDD sampling requires sampler_name=euler")
 
         current = store.active_card(manifest)
+        treatment_mode = manifest.get("continuation_treatment", "off")
+        if current.get("card_reference") is not None:
+            ref_image_size = current.get("ref_image_size", ref_image_size)
         if current.get("prompt_format") == "structured_v1":
             prompt = current["assembled_prompt"]
         continuation_strategy = current.get("continuation_strategy", "independent")
@@ -475,6 +585,13 @@ class LongCasterProject:
         selected_sigmas = sigmas if sigmas is not None else generated_sigmas(model, scheduler, steps)
         sigma_schedule = sigma_values(selected_sigmas)
         references = reference_snapshot(reference_packet)
+        from .longcaster.card_reference import prepare_reference
+        if generation_mode != "ref2va" and (current.get("card_reference") or {}).get("enabled"):
+            raise ProjectError("card references are available only in REF2VA")
+        card_reference, card_reference_image = prepare_reference(
+            store, current.get("card_reference"), references=references,
+            width=width, height=height, ref_image_size=ref_image_size, video_vae=video_vae,
+        )
         identity_anchor = (
             store.active_identity_anchor(manifest) if use_identity_anchor else None
         )
@@ -486,7 +603,7 @@ class LongCasterProject:
             identity_image = load_anchor_image(store, identity_anchor)
             identity_picture_index = 1 + sum(
                 1 for item in (references or {}).get("resources", []) if item.get("kind") == "image"
-            )
+            ) + int(card_reference_image is not None)
         parent_packet = None
         anchor = None
         anchor_image = None
@@ -603,6 +720,33 @@ class LongCasterProject:
             "prompt_sections": prompt_sections,
         }
         upstream_provenance = capture_generation_provenance(prompt_graph, unique_id)
+        from .longcaster.color_stable import COLOR_STABLE_RECIPE, vae_identity
+        from .longcaster.drift_control import DRIFT_CONTROL_RECIPE
+        color_anchor_card_id = current.get("color_anchor_source_card_id", current["id"])
+        color_anchor_recipe_card = next(
+            (item for item in manifest["cards"] if item["id"] == color_anchor_card_id),
+            None,
+        )
+        treatment_recipe = {
+            "mode": treatment_mode,
+            "applies_to": "direct_mmh3_continuation_only",
+            "drift_recipe": dict(DRIFT_CONTROL_RECIPE) if treatment_mode != "off" else None,
+            "color_recipe": dict(COLOR_STABLE_RECIPE) if treatment_mode == "color_stable" else None,
+            "color_anchor_source_card_id": color_anchor_card_id,
+            "color_anchor_artifact_sha256": (
+                color_anchor_recipe_card.get("artifact_sha256")
+                if color_anchor_recipe_card else None
+            ),
+            "source_artifact_sha256": (
+                continuation_source.get("artifact_sha256") if continuation_source else None
+            ),
+            "sigma_values": sigma_schedule if treatment_mode != "off" else None,
+            "sigmas_sha256": (
+                generation_fingerprint({"sigmas": sigma_schedule})
+                if treatment_mode != "off" else None
+            ),
+            "video_vae": vae_identity(video_vae) if treatment_mode == "color_stable" else None,
+        }
         recipe = {
             "version": 1,
             "project_mode": generation_mode,
@@ -626,12 +770,15 @@ class LongCasterProject:
             ),
             "continuation_strategy": continuation_strategy,
             "continuation_source": continuation_source,
+            "continuation_treatment": treatment_recipe,
             "references": references,
             "ref_image_size": ref_image_size,
             "state_anchor": anchor_diagnostic,
             "identity_anchor": identity_diagnostic,
             "runtime": runtime_capabilities(),
         }
+        if card_reference is not None:
+            recipe["card_reference"] = card_reference
         fingerprint = generation_fingerprint(recipe)
         manifest, started_card = store.begin_generation(
             action=action,
@@ -655,9 +802,16 @@ class LongCasterProject:
                 reference_packet=reference_packet,
                 ref_image_size=ref_image_size,
                 additional_reference_images={"identity": identity_image} if identity_image is not None else None,
+                card_reference=card_reference,
+                card_reference_image=card_reference_image,
             )
             continuation_plan = None
             target_latent = empty_latent
+            sampling_model = model
+            treatment_report = {
+                **treatment_recipe, "active": False,
+                "reason": "not_a_direct_continuation",
+            }
             if continuation_strategy == "direct_mmh3":
                 if continuation_source is None:
                     raise ProjectError("direct continuation has no resolved source")
@@ -674,6 +828,39 @@ class LongCasterProject:
                     height=height,
                     context_frames=context_frames,
                 )
+                anchor_packet = None
+                anchor_hash = (
+                    color_anchor_recipe_card.get("artifact_sha256")
+                    if color_anchor_recipe_card else None
+                )
+                if treatment_mode == "color_stable" and color_anchor_card_id != continuation_source["source_card_id"]:
+                    anchor_card = next(
+                        (item for item in manifest["cards"] if item["id"] == color_anchor_card_id),
+                        None,
+                    )
+                    if anchor_card is None or anchor_card.get("status") != "ACCEPTED":
+                        raise ProjectError("Color-Stable Drift AV baseline card is unavailable")
+                    anchor_hash = anchor_card.get("artifact_sha256")
+                    anchor_packet, _ = _packet_for_artifact(
+                        store, relative=anchor_card.get("master_path"),
+                        artifact_sha256=anchor_hash, label="color baseline source",
+                    )
+                policy = prepare_continuation_policy(
+                    target_latent, continuation_plan, mode=treatment_mode,
+                    video_vae=video_vae, source_packet=parent_packet,
+                    source_sha256=continuation_source["artifact_sha256"],
+                    anchor_packet=anchor_packet, anchor_sha256=anchor_hash,
+                    anchor_card_id=color_anchor_card_id,
+                    source_card_id=continuation_source["source_card_id"],
+                    width=width, height=height,
+                )
+                target_latent = policy.latent
+                sampling_model = policy.bind_sampling_stage(model, selected_sigmas)
+                treatment_report = {
+                    **policy.provenance, "active": treatment_mode != "off",
+                    "preparation_seconds": policy.preparation_seconds,
+                    "sigmas_sha256": generation_fingerprint({"sigmas": sigma_schedule}),
+                }
             if anchor_image is not None:
                 positive = apply_native_anchor(
                     positive=positive,
@@ -683,13 +870,18 @@ class LongCasterProject:
                     frame_index=anchor_frame_index,
                 )
             sampled = sample_h3(
-                model=model,
+                model=sampling_model,
                 positive=positive,
                 latent=target_latent,
                 sigmas=selected_sigmas,
                 seed=seed,
                 sampler_name=sampler_name,
             )
+            if continuation_source is not None:
+                source_path = store.absolute_path(continuation_source["path"])
+                if sha256_file(source_path) != continuation_source["artifact_sha256"]:
+                    raise ProjectError("continuation source changed during sampling")
+                treatment_report["source_hash_verified_after_sampling"] = True
             card_metadata = {
                 "schema_version": 1,
                 "project_name": project_name,
@@ -701,6 +893,7 @@ class LongCasterProject:
                 "timeline_predecessor_id": started_card.get("timeline_predecessor_id"),
                 "continuation_strategy": started_card.get("continuation_strategy"),
                 "continuation_source": continuation_source,
+                "continuation_treatment": treatment_report,
                 "prompt": prompt,
                 "prompt_hash": hash_prompt(prompt),
                 "prompt_sections": started_card.get("prompt_sections") if started_card.get("prompt_format") == "structured_v1" else None,
@@ -720,9 +913,12 @@ class LongCasterProject:
                 "continuation": continuation_plan,
                 "state_anchor": anchor_diagnostic,
                 "identity_anchor": identity_diagnostic,
+                "continuation_treatment": treatment_report,
                 "effective_prompt": effective_prompt,
                 "recipe_fingerprint": fingerprint,
             }
+            if card_reference is not None:
+                card_metadata["card_reference"] = card_reference
             saved_packet, final_path = pack_and_save_card(
                 path=destination,
                 latent=sampled,
@@ -808,6 +1004,8 @@ class LongCasterProject:
             "lora_activation_words": first_recipe.get("lora_activation_words", ""),
             "audio_handling": audio_handling,
         }
+        if first_recipe.get("card_reference") is not None:
+            refine_recipe["card_reference"] = first_recipe["card_reference"]
         manifest, derivative = store.begin_refine(
             card_id=card["id"],
             cadence=cadence,
@@ -834,6 +1032,11 @@ class LongCasterProject:
                     raise ProjectError(
                         "connected reference packet does not match the accepted card recipe"
                     )
+                if first_recipe.get("card_reference") and (
+                    (reference_snapshot(conditioning_packet) or {}).get("resources")
+                    != (first_recipe.get("references") or {}).get("resources")
+                ):
+                    raise ProjectError("refine reference resources differ from the accepted card recipe")
 
             identity_info = first_recipe.get("identity_anchor") or {}
             identity_anchor = (
@@ -846,6 +1049,13 @@ class LongCasterProject:
             identity_image = load_anchor_image(store, identity_anchor) if identity_anchor else None
 
             effective_prompt = str(first_recipe.get("effective_prompt") or card.get("prompt", ""))
+            from .longcaster.card_reference import prepare_refine_reference
+            refine_card_reference, refine_card_image = prepare_refine_reference(
+                store, first_recipe, references=reference_snapshot(conditioning_packet),
+                width=int(manifest["width"]), height=int(manifest["height"]),
+                ref_image_size=str(first_recipe.get("ref_image_size") or ref_image_size),
+                video_vae=video_vae,
+            )
             positive, _unused_empty, reference_report = build_conditioning(
                 clip=clip,
                 video_vae=video_vae,
@@ -856,6 +1066,8 @@ class LongCasterProject:
                 frames=int(card["generated_frame_count"]),
                 reference_packet=conditioning_packet,
                 ref_image_size=str(first_recipe.get("ref_image_size") or ref_image_size),
+                card_reference=refine_card_reference,
+                card_reference_image=refine_card_image,
                 additional_reference_images=(
                     {"identity": identity_image} if identity_image is not None else None
                 ),

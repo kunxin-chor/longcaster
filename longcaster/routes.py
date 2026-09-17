@@ -166,7 +166,10 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
                 "lora_activation_words": (take.get("recipe") or {}).get("lora_activation_words"),
                 "continuation_strategy": take.get("continuation_strategy"),
                 "continuation_source": take.get("continuation_source"),
+                "continuation_treatment": (take.get("recipe") or {}).get("continuation_treatment"),
                 "references": take.get("reference_set"),
+                "card_reference": (take.get("recipe") or {}).get("card_reference"),
+                "identity_anchor": (take.get("recipe") or {}).get("identity_anchor"),
             },
         })
     return {
@@ -193,6 +196,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "ref_image_size": card.get("ref_image_size", "match"),
         "continuation_strategy": card.get("continuation_strategy"),
         "continuation_source": card.get("continuation_source"),
+        "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
         "continuation_source_preference": card.get(
             "continuation_source_preference", "accepted_master"
         ),
@@ -205,6 +209,9 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
             None,
         ),
         "reference_set": card.get("reference_set"),
+        "card_reference": card.get("card_reference"),
+        "card_reference_resolved": (card.get("recipe") or {}).get("card_reference"),
+        "identity_anchor_resolved": (card.get("recipe") or {}).get("identity_anchor"),
         "accepted_publication_id": card.get("accepted_publication_id"),
         "has_publication_history": bool(card.get("publication_history")),
         "draft_inputs_dirty": card.get("draft_inputs_dirty", False),
@@ -240,21 +247,21 @@ def _identity_anchors(store: ProjectStore, manifest: dict[str, Any]) -> list[dic
             identities.append({
                 "anchor_id": anchor["anchor_id"],
                 "subject_id": anchor.get("subject_id"),
-                "label": anchor.get("label") or "Identity checkpoint",
-                "enabled": anchor.get("enabled", True),
-                "identity_scope": anchor.get("identity_scope", "face_only"),
-                "custom_identity_instruction": anchor.get("custom_identity_instruction"),
+            "label": anchor.get("label") or "Identity checkpoint",
+            "enabled": anchor.get("enabled", True),
+            "identity_scope": anchor.get("identity_scope", "face_only"),
+            "custom_identity_instruction": anchor.get("custom_identity_instruction"),
                 "source_card_id": card["id"],
                 "source_card_number": card["timeline_index"] + 1,
                 "source_artifact_number": card["artifact_number"],
-                "source_preview_frame_index": anchor.get("source_preview_frame_index"),
-                "source_timestamp_seconds": anchor.get("source_preview_timestamp_seconds"),
-                "active_for": active_by_anchor.get(anchor["anchor_id"], []),
-                "asset_available": bool(
-                    anchor.get("asset_path")
-                    and store.absolute_path(anchor["asset_path"]).is_file()
-                ),
-            })
+            "source_preview_frame_index": anchor.get("source_preview_frame_index"),
+            "source_timestamp_seconds": anchor.get("source_preview_timestamp_seconds"),
+            "active_for": active_by_anchor.get(anchor["anchor_id"], []),
+            "asset_available": bool(
+                anchor.get("asset_path")
+                and store.absolute_path(anchor["asset_path"]).is_file()
+            ),
+        })
     return identities
 
 
@@ -267,6 +274,7 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "revision": manifest["revision"],
         "generation_mode": manifest["generation_mode"],
         "refine_cadence": manifest.get("refine_cadence", "off"),
+        "continuation_treatment": manifest.get("continuation_treatment", "off"),
         "lora_activation_words": manifest.get("lora_activation_words", ""),
         "width": manifest["width"],
         "height": manifest["height"],
@@ -282,6 +290,7 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
             )
         ),
         "active_card_id": manifest["active_card_id"],
+        "observed_reference_set": manifest.get("observed_reference_set"),
         "pending_operation": ({
             key: pending.get(key) for key in ("id", "kind", "status", "card_id", "started_at")
         } if pending else None),
@@ -340,6 +349,7 @@ async def create_cards_project(request: web.Request) -> web.Response:
             height=int(payload.get("height", 960)),
             generation_mode=str(payload.get("generation_mode", "ref2va")),
             refine_cadence=str(payload.get("refine_cadence", "off")),
+            continuation_treatment=str(payload.get("continuation_treatment", "off")),
             lora_activation_words=str(payload.get("lora_activation_words") or ""),
         )
         return web.json_response(_cards_state(store, manifest, "Project created."), status=201)
@@ -381,6 +391,7 @@ async def update_cards_project(request: web.Request) -> web.Response:
             expected_revision=int(payload.get("revision", -1)),
             generation_mode=str(payload.get("generation_mode", "")),
             refine_cadence=payload.get("refine_cadence"),
+            continuation_treatment=payload.get("continuation_treatment"),
             lora_activation_words=payload.get("lora_activation_words"),
             width=payload.get("width"),
             height=payload.get("height"),
@@ -394,6 +405,69 @@ async def get_cards_state(request: web.Request) -> web.Response:
     try:
         store = ProjectStore(_projects_root(), request.query.get("project", ""))
         return web.json_response(_cards_state(store, store.load()))
+    except (OSError, ValueError, ProjectError) as exc:
+        return _error_response(exc, not_found=True)
+
+
+async def upload_card_reference(request: web.Request) -> web.Response:
+    try:
+        reader = await request.multipart()
+        fields = {}
+        total = 0
+        async for part in reader:
+            if part.name not in {"project", "card_id", "revision", "image"} or part.name in fields:
+                raise ProjectError("invalid card reference upload fields")
+            value = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 32 * 1024 * 1024:
+                    raise ProjectError("card reference upload exceeds 32 MiB")
+                value.extend(chunk)
+            fields[part.name] = bytes(value)
+        image_bytes = fields.pop("image", None)
+        if not image_bytes:
+            raise ProjectError("card reference upload requires an image")
+        fields = {key: value.decode("utf-8") for key, value in fields.items()}
+        store = ProjectStore(_projects_root(), fields.get("project", ""))
+        manifest = store.update_card_reference(
+            card_id=fields.get("card_id", ""), expected_revision=int(fields.get("revision", -1)),
+            image_bytes=image_bytes,
+        )
+        return web.json_response(_cards_state(store, manifest, "Card reference saved."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def remove_card_reference(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.update_card_reference(
+            card_id=str(payload.get("card_id", "")), expected_revision=int(payload.get("revision", -1)), remove=True,
+        )
+        return web.json_response(_cards_state(store, manifest, "Card reference removed; take sources retained."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def get_card_reference(request: web.Request) -> web.StreamResponse:
+    try:
+        from .project import sha256_file
+        store = ProjectStore(_projects_root(), request.query.get("project", ""))
+        manifest = store.load()
+        card = store._card(manifest, request.query.get("card_id", ""))
+        records = [card, *card.get("draft_takes", []), *card.get("publication_history", [])]
+        reference = next((record.get("card_reference") for record in records
+                          if (record.get("card_reference") or {}).get("id") == request.query.get("reference_id")), None)
+        if reference is None:
+            raise ProjectError("card reference does not exist")
+        path = store.absolute_path(reference["asset_path"])
+        if not path.is_file() or sha256_file(path) != reference["asset_sha256"]:
+            raise ProjectError("card reference image is missing or corrupt")
+        return web.FileResponse(path)
     except (OSError, ValueError, ProjectError) as exc:
         return _error_response(exc, not_found=True)
 
@@ -416,6 +490,7 @@ async def update_cards_card(request: web.Request) -> web.Response:
             duration_seconds=payload.get("duration_seconds"),
             seed=payload.get("seed"),
             ref_image_size=payload.get("ref_image_size"),
+            card_reference_settings=payload.get("card_reference_settings"),
             continuation_strategy=payload.get("continuation_strategy"),
             refine_enabled=payload.get("refine_enabled"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
@@ -663,6 +738,9 @@ def register_routes() -> bool:
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
     instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
+    instance.routes.post("/longcaster/cards/reference")(upload_card_reference)
+    instance.routes.delete("/longcaster/cards/reference")(remove_card_reference)
+    instance.routes.get("/longcaster/cards/reference")(get_card_reference)
     instance.routes.post("/longcaster/cards/copy")(copy_cards_sections)
     instance.routes.post("/longcaster/cards/continuation-source")(set_cards_continuation_source)
     instance.routes.get("/longcaster/cards/preview")(get_cards_preview)
