@@ -87,6 +87,7 @@ def prepare_continuation_policy(
     source_packet: Any | None = None,
     source_sha256: str | None = None,
     anchor_packet: Any | None = None,
+    anchor_stats: dict[str, Any] | None = None,
     anchor_sha256: str | None = None,
     anchor_card_id: str | None = None,
     source_card_id: str | None = None,
@@ -136,21 +137,27 @@ def prepare_continuation_policy(
                 "reason": "first_continuation_from_chain_baseline",
             }
         else:
-            if source_packet is None or anchor_packet is None or not source_sha256 or not anchor_sha256:
+            if source_packet is None or not source_sha256 or not anchor_sha256:
                 raise ValueError("Color-Stable Drift AV requires verified source and baseline artifacts")
             source_video = _video_tail(source_packet)
-            anchor_video = _video_tail(anchor_packet)
-            anchor_stats, _anchor_decoded, anchor_cached = cached_prefix_stats(
-                anchor_video, video_vae, artifact_sha256=anchor_sha256,
-                width=width, height=height,
-            )
+            if anchor_stats is None:
+                if anchor_packet is None:
+                    raise ValueError("Color-Stable Drift AV baseline statistics or artifact are required")
+                anchor_video = _video_tail(anchor_packet)
+                resolved_anchor_stats, _anchor_decoded, anchor_cached = cached_prefix_stats(
+                    anchor_video, video_vae, artifact_sha256=anchor_sha256,
+                    width=width, height=height,
+                )
+            else:
+                resolved_anchor_stats = deepcopy(anchor_stats)
+                anchor_cached = True
             source_stats, source_decoded, source_cached = cached_prefix_stats(
                 source_video, video_vae, artifact_sha256=source_sha256,
                 width=width, height=height,
             )
             prepared_video, summary = apply_color_delta(
                 _streams(output)[0][:, :, :12], video_vae,
-                anchor_stats=anchor_stats, current_stats=source_stats,
+                anchor_stats=resolved_anchor_stats, current_stats=source_stats,
                 decoded_current=source_decoded,
             )
             target_video, _target_audio = _streams(output)
@@ -158,7 +165,7 @@ def prepare_continuation_policy(
             corrected[:, :, :12] = prepared_video
             output = _replace_video(output, corrected)
             report.update({
-                "anchor_stats": anchor_stats,
+                "anchor_stats": resolved_anchor_stats,
                 "source_stats": source_stats,
                 "stats_cache": {"anchor_hit": anchor_cached, "source_hit": source_cached},
                 "color": summary,

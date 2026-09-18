@@ -137,7 +137,8 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["color_baseline_stats"], {})
         self.assertEqual(card["ref_image_size"], "max")
         self.assertEqual(card["draft_takes"][0]["ref_image_size"], "max")
 
@@ -289,7 +290,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -314,7 +315,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -325,7 +326,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -391,6 +392,62 @@ class ProjectStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ProjectError, "accepted source"):
             self.store.add_identity_anchor(card["id"], {"role": "identity"})
 
+    def test_generation_resolves_a_sole_nondefault_subject_identity_anchor(self):
+        self._draft()
+        manifest = self.store.accept()
+        card = self.store.active_card(manifest)
+        anchor_id = "6fdc3cd7-ea18-4ca7-bdfc-1564f1cedf7d"
+        anchor_path = self.store.path / "anchors" / card["id"] / f"{anchor_id}.png"
+        anchor_path.parent.mkdir(parents=True, exist_ok=True)
+        anchor_path.write_bytes(b"subject-four-identity")
+        anchor = {
+            "anchor_id": anchor_id,
+            "role": "identity",
+            "source_card_id": card["id"],
+            "source_preview_frame_index": 53,
+            "source_frame_index": 53,
+            "source_preview_timestamp_seconds": 53 / 24,
+            "source_timestamp_seconds": 53 / 24,
+            "asset_path": self.store.relative_path(anchor_path),
+            "asset_sha256": sha256_file(anchor_path),
+            "media_type": "image/png",
+            "created_at": "2026-09-18T00:00:00Z",
+            "enabled": True,
+            "subject_id": "<Subject 4>",
+            "label": "identity checkpoint",
+            "mode": "MiniMaxH3ReferenceToVideo/minimax_refs",
+            "strength": None,
+        }
+        manifest = self.store.add_identity_anchor(card["id"], anchor)
+
+        self.assertEqual(self.store.active_identity_anchor(manifest)["subject_id"], "<Subject 4>")
+        resolved = self.store.generation_identity_anchor(manifest)
+        self.assertEqual(resolved["anchor_id"], anchor_id)
+        self.assertEqual(resolved["subject_id"], "<Subject 4>")
+
+    def test_generation_rejects_multiple_enabled_identity_bindings(self):
+        self._draft()
+        manifest = self.store.accept()
+        card = self.store.active_card(manifest)
+        for index, subject in enumerate(("<Subject 2>", "<Subject 4>"), start=1):
+            anchor_id = f"00000000-0000-4000-8000-{index:012d}"
+            anchor_path = self.store.path / "anchors" / card["id"] / f"{anchor_id}.png"
+            anchor_path.parent.mkdir(parents=True, exist_ok=True)
+            anchor_path.write_bytes(subject.encode())
+            manifest = self.store.add_identity_anchor(card["id"], {
+                "anchor_id": anchor_id, "role": "identity", "source_card_id": card["id"],
+                "source_preview_frame_index": index, "source_frame_index": index,
+                "source_preview_timestamp_seconds": index / 24,
+                "source_timestamp_seconds": index / 24,
+                "asset_path": self.store.relative_path(anchor_path),
+                "asset_sha256": sha256_file(anchor_path), "media_type": "image/png",
+                "created_at": "2026-09-18T00:00:00Z", "enabled": True,
+                "subject_id": subject, "label": subject,
+                "mode": "MiniMaxH3ReferenceToVideo/minimax_refs", "strength": None,
+            })
+        with self.assertRaisesRegex(ProjectError, "supports one active identity checkpoint"):
+            self.store.generation_identity_anchor(manifest)
+
     def test_schema_four_identity_anchor_migrates_to_face_only(self):
         manifest = self._draft()
         manifest = self.store.accept()
@@ -423,7 +480,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -657,6 +714,121 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(active["generation_parent_id"], first_id)
         self.assertEqual(active["continuation_source"]["type"], "accepted_master")
 
+    def test_invalidate_render_tail_keeps_prefix_and_regenerates_suffix_in_order(self):
+        prompts = ["prompt one", "prompt two", "prompt three", "prompt four"]
+        card_ids = []
+        accepted = None
+        for index, prompt in enumerate(prompts):
+            if index:
+                self.store.append(prompt=prompt, duration_seconds=5, seed=40 + index)
+            self._draft(body=f"render {index}".encode(), prompt=prompt, seed=40 + index)
+            accepted = self.store.accept()
+            card_ids.append(self.store.active_card(accepted)["id"])
+
+        pending, derivative = self.store.begin_refine(
+            card_id=card_ids[1], cadence="manual", recipe={"sigmas": [0.8, 0]},
+            use_as_default=True,
+        )
+        derivative_path = self.store.derivative_destination(
+            accepted["cards"][1], derivative["id"]
+        )
+        derivative_path.parent.mkdir(parents=True, exist_ok=True)
+        derivative_path.write_bytes(b"prefix refine")
+        accepted = self.store.finish_refine(
+            operation_id=pending["pending_operation"]["id"],
+            derivative_path=derivative_path,
+            artifact_sha256=sha256_file(derivative_path),
+            execution_seconds=0.1,
+            prefix_protection={"method": "test"},
+            audio_handling="joint_av_second_sample",
+        )
+        accepted = self.store.update_project_settings(
+            expected_revision=accepted["revision"],
+            generation_mode="ref2va",
+            refine_cadence="manual",
+            continuation_treatment="color_stable",
+        )
+        prefix_paths = {
+            path
+            for card in accepted["cards"][:2]
+            for path in (card.get("master_path"), card.get("draft_path"))
+            if path
+        }
+        suffix_paths = {
+            path
+            for card in accepted["cards"][2:]
+            for path in (
+                card.get("master_path"), card.get("draft_path"),
+                *(take.get("artifact_path") for take in card.get("draft_takes", [])),
+            )
+            if path
+        }
+        old_numbers = [card["artifact_number"] for card in accepted["cards"]]
+
+        invalidated = self.store.invalidate_render_tail(
+            card_id=card_ids[2], expected_revision=accepted["revision"]
+        )
+
+        self.assertEqual(
+            [card["status"] for card in invalidated["cards"]],
+            ["ACCEPTED", "ACCEPTED", "INVALIDATED", "INVALIDATED"],
+        )
+        self.assertEqual(invalidated["active_card_id"], card_ids[2])
+        self.assertEqual([card["prompt"] for card in invalidated["cards"]], prompts)
+        self.assertEqual(invalidated["refine_cadence"], "manual")
+        self.assertEqual(invalidated["continuation_treatment"], "color_stable")
+        self.assertEqual(invalidated["cards"][2]["continuation_source"]["type"], "derivative")
+        self.assertEqual(
+            invalidated["cards"][2]["continuation_source"]["derivative_id"], derivative["id"]
+        )
+        self.assertTrue(derivative_path.is_file())
+        self.assertTrue(all(self.store.absolute_path(path).is_file() for path in prefix_paths))
+        self.assertTrue(all(not self.store.absolute_path(path).exists() for path in suffix_paths))
+        self.assertTrue(
+            all(
+                number > max(old_numbers)
+                for number in [
+                    invalidated["cards"][2]["artifact_number"],
+                    invalidated["cards"][3]["artifact_number"],
+                ]
+            )
+        )
+
+        self._draft(body=b"replacement three", prompt=prompts[2], seed=42)
+        self.store.accept()
+        advanced, did_advance = self.store.activate_next_invalidated(card_ids[2])
+        self.assertTrue(did_advance)
+        self.assertEqual(advanced["active_card_id"], card_ids[3])
+        self.assertEqual(advanced["cards"][3]["status"], "INVALIDATED")
+        self.assertEqual(advanced["cards"][3]["generation_parent_id"], card_ids[2])
+        self.assertEqual(
+            advanced["cards"][3]["continuation_source"]["source_card_id"], card_ids[2]
+        )
+
+    def test_invalidate_render_tail_restores_files_if_commit_fails(self):
+        self._draft(body=b"first", prompt="one", seed=1)
+        first = self.store.accept()
+        first_id = self.store.active_card(first)["id"]
+        self.store.append(prompt="two", duration_seconds=5, seed=2)
+        self._draft(body=b"second", prompt="two", seed=2)
+        accepted = self.store.accept()
+        paths = {
+            path
+            for card in accepted["cards"]
+            for path in (
+                card.get("master_path"),
+                *(take.get("artifact_path") for take in card.get("draft_takes", [])),
+            )
+            if path
+        }
+        with patch.object(self.store, "_commit_unlocked", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.store.invalidate_render_tail(
+                    card_id=first_id, expected_revision=accepted["revision"]
+                )
+        self.assertTrue(all(self.store.absolute_path(path).is_file() for path in paths))
+        self.assertTrue(all(card["status"] == "ACCEPTED" for card in self.store.load()["cards"]))
+
     def test_schema_ten_completed_card_migrates_to_one_selected_take(self):
         manifest = self._draft(body=b"legacy draft")
         document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
@@ -668,7 +840,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         migrated_card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(len(migrated_card["draft_takes"]), 1)
         self.assertEqual(
             migrated_card["selected_draft_take_id"], migrated_card["draft_takes"][0]["id"]
@@ -685,7 +857,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(card["selected_draft_take_id"], original_take_id)
         self.assertEqual(len(card["draft_takes"]), 1)
 
@@ -845,7 +1017,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(card["prompt_format"], "legacy_flat")
         self.assertEqual(card["prompt"], original)
         self.assertEqual(card["assembled_prompt"], original)
@@ -871,7 +1043,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = store.load()
         card = store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertIn("summary:\nA player enters the court.", card["assembled_prompt"])
         self.assertNotIn("<summary>", card["assembled_prompt"])
         self.assertEqual(card["prompt"], card["assembled_prompt"])
@@ -1250,7 +1422,7 @@ class ProjectStoreTests(unittest.TestCase):
         raw["cards"][0].pop("color_anchor_source_card_id", None)
         self.store.manifest_path.write_text(json.dumps(raw), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 16)
+        self.assertEqual(migrated["schema_version"], 17)
         self.assertEqual(migrated["continuation_treatment"], "off")
         self.assertEqual(
             migrated["cards"][0]["color_anchor_source_card_id"],

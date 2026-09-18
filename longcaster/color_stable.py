@@ -16,7 +16,7 @@ COLOR_STABLE_RECIPE = {
     "version": "longcaster_h3_latent_color_delta_v1",
     "context_frames": 39,
     "video_steps": 12,
-    "anchor": "first_card_in_continuation_ancestry",
+    "anchor": "selected_earlier_accepted_card",
     "source": "resolved_continuation_source_tail",
     "strength": 0.50,
     "minimum_luma_shift_code_values": 1.0,

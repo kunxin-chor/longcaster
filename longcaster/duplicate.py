@@ -160,6 +160,7 @@ def duplicate_project(
                         card["continuation_source"] = None
                 duplicated["active_card_id"] = duplicated["cards"][0]["id"]
                 duplicated["active_identity_anchors"] = {}
+                duplicated["color_baseline_stats"] = {}
                 duplicated["last_operation"]["kind"] = "duplicate_and_invalidate_project"
                 for directory_name in (
                     "clips", "drafts", "previews", "anchors", "anchor_candidates", "derivatives"
@@ -258,6 +259,12 @@ def duplicate_project(
                         destination.project_name,
                         derivative.get("source_artifact_sha256"),
                     )
+
+            cards_by_id = {card["id"]: card for card in duplicated["cards"]}
+            for card_id, record in duplicated.get("color_baseline_stats", {}).items():
+                card = cards_by_id.get(card_id)
+                if card and card.get("artifact_sha256"):
+                    record["artifact_sha256"] = card["artifact_sha256"]
 
             staging_store = ProjectStore(destination.projects_root, destination.project_name)
             staging_store.path = staging.resolve()

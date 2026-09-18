@@ -28,7 +28,7 @@ from .prompt_sections import (
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
@@ -358,6 +358,7 @@ class ProjectStore:
                 "active_card_id": first["id"],
                 "cards": [first],
                 "active_identity_anchors": {},
+                "color_baseline_stats": {},
                 "pending_operation": None,
                 "last_operation": None,
             }
@@ -470,6 +471,7 @@ class ProjectStore:
         generated_frame_count: int,
         actual_new_frame_count: int,
         actual_duration_seconds: float,
+        color_baseline_stats: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -527,6 +529,10 @@ class ProjectStore:
             take = _take_from_card(card, artifact_path=relative)
             card.setdefault("draft_takes", []).append(take)
             card["selected_draft_take_id"] = take["id"]
+            if color_baseline_stats is not None:
+                record = deepcopy(color_baseline_stats)
+                record.setdefault("created_at", utc_now())
+                manifest.setdefault("color_baseline_stats", {})[record["card_id"]] = record
             operation_record = {key: value for key, value in pending.items() if key != "candidate"}
             manifest["last_operation"] = {**operation_record, "status": "complete", "ended_at": utc_now()}
             manifest["pending_operation"] = None
@@ -779,6 +785,7 @@ class ProjectStore:
                 "replacement_artifact_number": card["artifact_number"],
                 "ended_at": utc_now(),
             }
+            manifest.setdefault("color_baseline_stats", {}).pop(card["id"], None)
             self._commit_unlocked(manifest)
             retained_take_paths = {
                 item.get("artifact_path") for item in card.get("draft_takes", [])
@@ -1061,6 +1068,7 @@ class ProjectStore:
             for subject_id, anchor_id in list(bindings.items()):
                 if anchor_id in removed_anchor_ids:
                     del bindings[subject_id]
+            manifest.setdefault("color_baseline_stats", {}).pop(removed_card_id, None)
 
             manifest["cards"].pop()
             manifest["active_card_id"] = predecessor["id"]
@@ -1153,6 +1161,7 @@ class ProjectStore:
                 for subject_id, anchor_id in list(bindings.items()):
                     if anchor_id in removed_anchor_ids:
                         del bindings[subject_id]
+                manifest.setdefault("color_baseline_stats", {}).pop(card["id"], None)
 
                 previous_status = card["status"]
                 previous_artifact_number = card["artifact_number"]
@@ -1220,6 +1229,169 @@ class ProjectStore:
                     shutil.rmtree(self.absolute_path(relative_directory), ignore_errors=True)
                 except OSError:
                     pass
+            return deepcopy(manifest)
+
+    def invalidate_render_tail(
+        self, *, card_id: str, expected_revision: int
+    ) -> dict[str, Any]:
+        """Invalidate one rendered card and every card after it.
+
+        The accepted prefix is retained. The selected card becomes the sole active
+        generation card; later invalidated definitions remain locked until the
+        preceding card is regenerated and accepted.
+        """
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot invalidate renders while another operation is pending")
+
+            selected = self._card(manifest, card_id)
+            start = int(selected["timeline_index"])
+            prefix = manifest["cards"][:start]
+            suffix = manifest["cards"][start:]
+            if any(card.get("status") != "ACCEPTED" for card in prefix):
+                raise ProjectError("cards before the invalidation point must be accepted")
+            if (
+                selected.get("status") not in {"DRAFT", "ACCEPTED"}
+                or not selected.get("artifact_sha256")
+            ):
+                raise ProjectError("invalidation must start at a rendered DRAFT or ACCEPTED card")
+
+            disposable_relatives: list[str | None] = []
+            removed_anchor_ids: set[str] = set()
+            used_numbers: list[int] = []
+            for card in manifest["cards"]:
+                used_numbers.append(int(card["artifact_number"]))
+                for publication in card.get("publication_history", []):
+                    used_numbers.append(int(publication["artifact_number"]))
+            for card in suffix:
+                disposable_relatives.extend((
+                    card.get("draft_path"),
+                    card.get("master_path"),
+                    (card.get("preview") or {}).get("asset_path"),
+                    *(item.get("artifact_path") for item in card.get("draft_takes", [])),
+                    *((item.get("preview") or {}).get("asset_path") for item in card.get("draft_takes", [])),
+                    *(item.get("asset_path") for item in card.get("anchors", [])),
+                    *(item.get("artifact_path") for item in card.get("derivatives", [])),
+                ))
+                removed_anchor_ids.update(
+                    item.get("anchor_id") for item in card.get("anchors", [])
+                    if item.get("anchor_id")
+                )
+                for publication in card.get("publication_history", []):
+                    disposable_relatives.extend((
+                        publication.get("master_path"),
+                        (publication.get("preview") or {}).get("asset_path"),
+                        *(item.get("asset_path") for item in publication.get("anchors", [])),
+                        *(item.get("artifact_path") for item in publication.get("derivatives", [])),
+                    ))
+                    removed_anchor_ids.update(
+                        item.get("anchor_id") for item in publication.get("anchors", [])
+                        if item.get("anchor_id")
+                    )
+
+            operation_id = str(uuid.uuid4())
+            quarantine = self.path / "transactions" / f".invalidate_tail_{operation_id}"
+            moved: list[tuple[Path, Path]] = []
+            try:
+                for relative in dict.fromkeys(item for item in disposable_relatives if item):
+                    source = self.absolute_path(relative)
+                    if not source.is_file():
+                        continue
+                    staged = quarantine.joinpath(*PurePosixPath(relative).parts)
+                    staged.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(source, staged)
+                    moved.append((source, staged))
+
+                bindings = manifest.setdefault("active_identity_anchors", {})
+                for subject_id, anchor_id in list(bindings.items()):
+                    if anchor_id in removed_anchor_ids:
+                        del bindings[subject_id]
+                color_stats = manifest.setdefault("color_baseline_stats", {})
+                for invalidated in suffix:
+                    color_stats.pop(invalidated["id"], None)
+
+                next_artifact_number = max(used_numbers, default=0) + 1
+                for offset, card in enumerate(suffix):
+                    card.update({
+                        "artifact_number": next_artifact_number + offset,
+                        "status": "INVALIDATED",
+                        "attempt": 0,
+                        "draft_path": None,
+                        "master_path": None,
+                        "artifact_sha256": None,
+                        "generation_fingerprint": None,
+                        "recipe": None,
+                        "reference_set": None,
+                        "context_frame_count": 0,
+                        "generated_frame_count": None,
+                        "actual_new_frame_count": None,
+                        "actual_duration_seconds": None,
+                        "accepted_at": None,
+                        "accepted_publication_id": None,
+                        "draft_inputs_dirty": False,
+                        "draft_takes": [],
+                        "selected_draft_take_id": None,
+                        "preview": None,
+                        "anchors": [],
+                        "derivatives": [],
+                        "publication_history": [],
+                        "continuation_source_preference": "accepted_master",
+                        "updated_at": utc_now(),
+                        "last_error": None,
+                    })
+                    if card.get("continuation_strategy") == "direct_mmh3":
+                        parent = next(
+                            (
+                                item for item in manifest["cards"]
+                                if item["id"] == card.get("generation_parent_id")
+                            ),
+                            None,
+                        )
+                        card["continuation_source"] = (
+                            self._preferred_source(parent)
+                            if offset == 0 and parent and parent.get("status") == "ACCEPTED"
+                            else {
+                                "source_card_id": card.get("generation_parent_id"),
+                                "type": "accepted_master",
+                                "derivative_id": None,
+                            }
+                        )
+                    else:
+                        card["continuation_source"] = None
+
+                manifest["active_card_id"] = selected["id"]
+                manifest["last_operation"] = {
+                    "id": operation_id,
+                    "kind": "invalidate_render_tail",
+                    "status": "complete",
+                    "card_id": selected["id"],
+                    "card_count": len(suffix),
+                    "removed_file_count": len(moved),
+                    "ended_at": utc_now(),
+                }
+                self._commit_unlocked(manifest)
+            except Exception:
+                for source, staged in reversed(moved):
+                    if staged.exists():
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        os.replace(staged, source)
+                shutil.rmtree(quarantine, ignore_errors=True)
+                raise
+
+            shutil.rmtree(quarantine, ignore_errors=True)
+            for card in suffix:
+                for relative_directory in (
+                    f"previews/{card['id']}",
+                    f"anchors/{card['id']}",
+                    f"anchor_candidates/{card['id']}",
+                    f"derivatives/{card['id']}",
+                ):
+                    try:
+                        shutil.rmtree(self.absolute_path(relative_directory), ignore_errors=True)
+                    except OSError:
+                        pass
             return deepcopy(manifest)
 
     def invalidate_all_renders(self) -> dict[str, Any]:
@@ -1305,6 +1477,7 @@ class ProjectStore:
                         card["continuation_source"] = None
                 manifest["active_card_id"] = manifest["cards"][0]["id"]
                 manifest["active_identity_anchors"] = {}
+                manifest["color_baseline_stats"] = {}
                 manifest["last_operation"] = {
                     "id": operation_id,
                     "kind": "invalidate_all_renders",
@@ -1572,8 +1745,16 @@ class ProjectStore:
             return deepcopy(manifest)
 
     def active_identity_anchor(
-        self, manifest: dict[str, Any], subject_id: str = "<Subject 1>", *, include_disabled: bool = False
+        self, manifest: dict[str, Any], subject_id: str | None = None, *, include_disabled: bool = False
     ) -> dict[str, Any] | None:
+        if subject_id is None:
+            bindings = manifest.get("active_identity_anchors", {})
+            if "<Subject 1>" in bindings:
+                subject_id = "<Subject 1>"
+            elif len(bindings) == 1:
+                subject_id = next(iter(bindings))
+            else:
+                return None
         try:
             anchor = deepcopy(self._bound_identity_anchor(manifest, subject_id))
         except ProjectError:
@@ -1581,6 +1762,24 @@ class ProjectStore:
         if not include_disabled and not anchor.get("enabled", True):
             return None
         return anchor
+
+    def generation_identity_anchor(self, manifest: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve the one enabled identity binding supported by generation."""
+        active: list[dict[str, Any]] = []
+        for subject_id in manifest.get("active_identity_anchors", {}):
+            try:
+                anchor = self._bound_identity_anchor(manifest, subject_id)
+            except ProjectError:
+                continue
+            if anchor.get("enabled", True):
+                active.append(anchor)
+        if len(active) > 1:
+            subjects = ", ".join(sorted(str(item.get("subject_id")) for item in active))
+            raise ProjectError(
+                "generation currently supports one active identity checkpoint; "
+                f"clear or disable all but one of: {subjects}"
+            )
+        return deepcopy(active[0]) if active else None
 
     def select_draft_take(
         self, *, card_id: str, take_id: str, expected_revision: int
@@ -1808,6 +2007,7 @@ class ProjectStore:
         ref_image_size: str | None = None,
         card_reference_settings: dict[str, Any] | None = None,
         continuation_strategy: str | None = None,
+        color_anchor_source_card_id: str | None = None,
         refine_enabled: bool | None = None,
         convert_legacy: bool = False,
         import_prompt: str | None = None,
@@ -1931,6 +2131,22 @@ class ProjectStore:
                     card["continuation_source"] = None
                     card["color_anchor_source_card_id"] = card["id"]
                 card["continuation_strategy"] = strategy
+            if color_anchor_source_card_id is not None:
+                baseline_id = str(color_anchor_source_card_id)
+                if card.get("continuation_strategy") != "direct_mmh3":
+                    if baseline_id != card["id"]:
+                        raise ProjectError("only direct continuations can select an earlier color baseline")
+                else:
+                    try:
+                        baseline = self._card(manifest, baseline_id)
+                    except ProjectError as exc:
+                        raise ProjectError("color baseline card does not exist") from exc
+                    if (
+                        baseline.get("status") != "ACCEPTED"
+                        or int(baseline.get("timeline_index", -1)) >= int(card["timeline_index"])
+                    ):
+                        raise ProjectError("color baseline must be an earlier accepted card")
+                card["color_anchor_source_card_id"] = baseline_id
             if card["status"] == "DRAFT" and previous_inputs != (
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
@@ -2476,14 +2692,15 @@ class ProjectStore:
                 if color_anchor_id != card.get("id"):
                     raise ProjectError("fresh-shot cards must establish their own color baseline")
             else:
-                ancestor_id = parent_id
-                ancestors = set()
-                while ancestor_id is not None:
-                    ancestors.add(ancestor_id)
-                    ancestor = next(item for item in cards if item.get("id") == ancestor_id)
-                    ancestor_id = ancestor.get("generation_parent_id")
-                if color_anchor_id not in ancestors:
-                    raise ProjectError("direct continuation color baseline must be an ancestor")
+                baseline = next(
+                    (item for item in cards[:index] if item.get("id") == color_anchor_id),
+                    None,
+                )
+                if baseline is None or (
+                    card.get("status") != "INVALIDATED"
+                    and baseline.get("status") != "ACCEPTED"
+                ):
+                    raise ProjectError("direct continuation color baseline must be an earlier accepted card")
             if card.get("ref_image_size") not in REF_IMAGE_SIZES:
                 raise ProjectError("card ref_image_size must be match or max")
             if card.get("continuation_strategy") == "independent" and parent_id is not None:
@@ -2752,6 +2969,26 @@ class ProjectStore:
                     raise ProjectError("publication history artifact_sha256 must be a lowercase SHA-256")
         if manifest.get("active_card_id") not in ids:
             raise ProjectError("active card does not exist")
+        color_stats = manifest.get("color_baseline_stats")
+        if not isinstance(color_stats, dict):
+            raise ProjectError("color_baseline_stats must be an object")
+        for card_id, record in color_stats.items():
+            if card_id not in ids or not isinstance(record, dict) or record.get("card_id") != card_id:
+                raise ProjectError("color baseline statistics identify an invalid card")
+            if not isinstance(record.get("artifact_sha256"), str) or not re.fullmatch(
+                r"[0-9a-f]{64}", record["artifact_sha256"]
+            ):
+                raise ProjectError("color baseline statistics require a lowercase SHA-256")
+            if (
+                not isinstance(record.get("width"), int)
+                or not isinstance(record.get("height"), int)
+                or not isinstance(record.get("vae_fingerprint"), str)
+                or not record["vae_fingerprint"]
+                or not isinstance(record.get("algorithm_version"), str)
+                or not record["algorithm_version"]
+                or not isinstance(record.get("statistics"), dict)
+            ):
+                raise ProjectError("color baseline statistics are malformed")
         bindings = manifest.get("active_identity_anchors")
         if not isinstance(bindings, dict):
             raise ProjectError("active_identity_anchors must be an object")
@@ -2769,7 +3006,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         color_anchors: dict[str, str] = {}
@@ -2854,6 +3091,7 @@ class ProjectStore:
             previous_id = card.get("id")
             color_anchors[card["id"]] = card["color_anchor_source_card_id"]
         manifest.setdefault("active_identity_anchors", {})
+        manifest.setdefault("color_baseline_stats", {})
         manifest.setdefault("refine_cadence", "off")
         manifest.setdefault("continuation_treatment", "off")
         manifest.setdefault("lora_activation_words", "")

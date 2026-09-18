@@ -16,7 +16,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 
 ## Implemented
 
-- Schema 16 direct-continuation treatment policy: backward-compatible Off, Drift-Control AV with synchronized schedule-matched sampler/H3 video masks, and optional Color-Stable Drift AV with a stable ancestry baseline, neutral Card 2, video-only VAE delta correction, immutable-source hash verification, frozen recipes, and a reusable per-stage binding boundary for future SelfLift work. Stage 3A refine is unchanged.
+- Schema 17 direct-continuation treatment policy: backward-compatible Off, Drift-Control AV with synchronized schedule-matched sampler/H3 video masks, and optional Color-Stable Drift AV with a selectable earlier accepted-card baseline, persisted hash/VAE/version-bound baseline statistics, video-only VAE delta correction, immutable-source hash verification, frozen recipes, and a reusable per-stage binding boundary for future SelfLift work. Stage 3A refine is unchanged.
 
 - Patch-agnostic upstream `MODEL` input and Comfy Basic Guider sampling.
 - Optional external `SIGMAS`, with finite/decreasing/terminal-zero validation and direct forwarding to the advanced sampler.

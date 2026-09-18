@@ -492,11 +492,32 @@ async def update_cards_card(request: web.Request) -> web.Response:
             ref_image_size=payload.get("ref_image_size"),
             card_reference_settings=payload.get("card_reference_settings"),
             continuation_strategy=payload.get("continuation_strategy"),
+            color_anchor_source_card_id=payload.get("color_anchor_source_card_id"),
             refine_enabled=payload.get("refine_enabled"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
             import_prompt=payload.get("import_prompt"),
         )
         return web.json_response(_cards_state(store, manifest, "Card saved."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def invalidate_cards_tail(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.invalidate_render_tail(
+            card_id=str(payload.get("card_id", "")),
+            expected_revision=int(payload.get("revision", -1)),
+        )
+        count = int((manifest.get("last_operation") or {}).get("card_count", 0))
+        return web.json_response(
+            _cards_state(
+                store,
+                manifest,
+                f"Invalidated {count} card{'s' if count != 1 else ''}; regeneration starts here.",
+            )
+        )
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
@@ -738,6 +759,7 @@ def register_routes() -> bool:
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
     instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
+    instance.routes.post("/longcaster/cards/invalidate-tail")(invalidate_cards_tail)
     instance.routes.post("/longcaster/cards/reference")(upload_card_reference)
     instance.routes.delete("/longcaster/cards/reference")(remove_card_reference)
     instance.routes.get("/longcaster/cards/reference")(get_card_reference)

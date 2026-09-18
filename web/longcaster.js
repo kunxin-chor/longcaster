@@ -103,6 +103,27 @@ function syncProjectNode(node, state) {
     node.graph?.setDirtyCanvas(true, true);
 }
 
+function remainingBatchPlan(state) {
+    const cards = state?.cards || [];
+    const start = cards.findIndex((card) => card.id === state?.active_card_id);
+    if (start < 0) return null;
+    const tail = cards.slice(start);
+    const first = tail[0];
+    const generatable = new Set(["EMPTY", "FAILED", "INVALIDATED"]);
+    if (![...generatable, "DRAFT"].includes(first.status)) return null;
+    if (tail.slice(1).some((card) => card.status !== "INVALIDATED")) return null;
+    if (first.status === "DRAFT" && (first.draft_inputs_dirty || tail.length === 1)) return null;
+    const renderCount = tail.filter((card) => generatable.has(card.status)).length;
+    if (!renderCount) return null;
+    return {
+        firstCardId: first.id,
+        lastCardId: tail[tail.length - 1].id,
+        firstAction: first.status === "DRAFT" ? "accept" : "generate",
+        renderCount,
+        cardCount: tail.length,
+    };
+}
+
 async function queueAction(node, action) {
     const authority = projectAuthority(node);
     if (authority) repairContinuationTreatmentWidgetOrder(authority);
@@ -607,8 +628,9 @@ function createCardsWorkspace(node) {
     const retry = cardsElement("button", "", "Retry Draft");
     const retryDifferentSeed = cardsElement("button", "", "Retry Draft with Different Seed");
     const accept = cardsElement("button", "lc-cards-accept", "Accept Draft");
+    const batchRender = cardsElement("button", "lc-cards-primary", "Render Remaining Drafts");
     const append = cardsElement("button", "lc-cards-primary", "Append Card");
-    actions.append(generate, retry, retryDifferentSeed, accept, append);
+    actions.append(generate, retry, retryDifferentSeed, accept, batchRender, append);
     const stop = cardsElement("button", "lc-cards-danger", "Stop Generation / Unlock");
     const close = cardsElement("button", "lc-cards-close", "Close");
     top.append(projectSelect, refresh, newProject, duplicateProject, projectPath, actions, stop, close);
@@ -661,7 +683,7 @@ function createCardsWorkspace(node) {
     const cardTitle = cardsElement("h2", "", "Card");
     const nextCard = cardsElement("button", "", "›");
     const cardStatus = cardsElement("span", "");
-    const invalidateRender = cardsElement("button", "lc-cards-invalidate", "Invalidate Render");
+    const invalidateRender = cardsElement("button", "lc-cards-invalidate", "Invalidate From This Card");
     const unpublish = cardsElement("button", "lc-cards-unpublish", "Unpublish to Draft");
     const removeDraft = cardsElement("button", "lc-cards-remove", "Remove Draft Card");
     cardHead.append(previousCard, cardTitle, nextCard, cardStatus, invalidateRender, unpublish, removeDraft);
@@ -705,7 +727,11 @@ function createCardsWorkspace(node) {
         const option = document.createElement("option"); option.value = value; option.textContent = label; treatment.append(option);
     }
     treatmentField.append(cardsElement("label", "", "Continuation treatment"), treatment);
-    treatmentField.append(cardsElement("div", "lc-cards-help", "Project-level policy for direct MMH3 continuation. Existing projects default to Off. Color-Stable uses the first card in each continuation chain as its baseline; Card 2 remains neutral."));
+    treatmentField.append(cardsElement("div", "lc-cards-help", "Project-level policy for direct MMH3 continuation. It runs independently of optional source refinement. Existing projects default to Off."));
+    const colorBaselineField = cardsElement("div", "lc-cards-field");
+    const colorBaseline = document.createElement("select");
+    colorBaselineField.append(cardsElement("label", "", "Color-Stable baseline card"), colorBaseline);
+    colorBaselineField.append(cardsElement("div", "lc-cards-help", "Choose any earlier accepted card as this direct continuation's scene-color baseline. The choice is inherited by newly appended cards until you change it."));
     const refImageSizeField = cardsElement("div", "lc-cards-field");
     const refImageSize = document.createElement("select");
     for (const [value, label] of [["match", "Match generation size"], ["max", "Maximum reference size"]]) {
@@ -726,13 +752,13 @@ function createCardsWorkspace(node) {
     const disableRefineRadios = (group, disabled) => { for (const input of Object.values(group.inputs)) input.disabled = disabled; };
     const refineCadenceField = cardsElement("div", "lc-cards-field");
     const refineCadence = makeRefineRadios("card");
-    refineCadenceField.append(cardsElement("label", "", "Continuation refine"), refineCadence.root);
-    refineCadenceField.append(cardsElement("div", "lc-cards-help", "Creates a same-resolution derivative. The accepted master is never replaced."));
+    refineCadenceField.append(cardsElement("label", "", "Optional source refine"), refineCadence.root);
+    refineCadenceField.append(cardsElement("div", "lc-cards-help", "Optionally creates a same-resolution continuation source. This does not disable or replace Drift + Color-Stable, and the accepted master is never replaced."));
     const refineEnabledField = cardsElement("div", "lc-cards-field");
     const refineEnabled = document.createElement("input"); refineEnabled.type = "checkbox";
-    const refineEnabledLabel = cardsElement("label", "lc-refine-check"); refineEnabledLabel.append(refineEnabled, document.createTextNode("Refine enabled for this card"));
+    const refineEnabledLabel = cardsElement("label", "lc-refine-check"); refineEnabledLabel.append(refineEnabled, document.createTextNode("Create refined source after accepting this card"));
     refineEnabledField.append(refineEnabledLabel, cardsElement("div", "lc-cards-help", "Used only in Manual mode. The setting becomes read-only after acceptance."));
-    fields.append(durationField, seedField, modeField, strategyField, treatmentField, refImageSizeField, refineCadenceField, refineEnabledField);
+    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, refImageSizeField, refineCadenceField, refineEnabledField);
     const cardReferenceControls = createCardReferenceControls({
         assetURL: path => api.apiURL(path),
         onSettings(settings) {
@@ -748,8 +774,8 @@ function createCardsWorkspace(node) {
     const subjectRefine = cardsElement("div", "lc-subject-refine");
     const subjectRefineCadence = makeRefineRadios("subject");
     const subjectRefineEnabled = document.createElement("input"); subjectRefineEnabled.type = "checkbox";
-    const subjectRefineEnabledLabel = cardsElement("label", "lc-refine-check"); subjectRefineEnabledLabel.append(subjectRefineEnabled, document.createTextNode("Refine enabled for this card"));
-    subjectRefine.append(cardsElement("div", "lc-subject-refine-title", "Continuation refine"), subjectRefineCadence.root, subjectRefineEnabledLabel, cardsElement("div", "lc-cards-help", "Off overrides all card settings. Auto refines every accepted card. Manual uses this card checkbox."));
+    const subjectRefineEnabledLabel = cardsElement("label", "lc-refine-check"); subjectRefineEnabledLabel.append(subjectRefineEnabled, document.createTextNode("Create refined source after accepting this card"));
+    subjectRefine.append(cardsElement("div", "lc-subject-refine-title", "Optional source refine"), subjectRefineCadence.root, subjectRefineEnabledLabel, cardsElement("div", "lc-cards-help", "Controls only creation of an optional continuation source. It is independent of Drift + Color-Stable. Off never creates one; Auto creates one after every accepted card; Manual follows this card checkbox."));
     section.insertBefore(subjectRefine, textarea);
     const editing = cardsElement("div", "lc-cards-editing");
     const fullPanel = cardsElement("div", "lc-cards-fullpanel");
@@ -886,7 +912,7 @@ function createCardsWorkspace(node) {
         loraDirty: false,
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
-        pictureRailOpen,
+        pictureRailOpen, batch: null,
     };
     node.longcasterCardsWorkspace = workspace;
     node.graph.longcasterProjectAuthority = node;
@@ -894,7 +920,7 @@ function createCardsWorkspace(node) {
     const selectedCard = () => workspace.state?.cards?.find((card) => card.id === workspace.selectedCardId);
     const viewedTake = (card = selectedCard()) => card?.draft_takes?.find((take) => take.id === workspace.viewedTakeId);
     const identitySourceCard = () => workspace.state?.cards?.find((card) => card.id === workspace.identitySourceCardId && card.status === "ACCEPTED");
-    const editable = (card) => Boolean(card && !workspace.referenceBusy && !workspace.state?.pending_operation && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status));
+    const editable = (card) => Boolean(card && !workspace.batch?.active && !workspace.referenceBusy && !workspace.state?.pending_operation && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status));
     const setMessage = (value, error = false) => { message.textContent = value; message.className = error ? "lc-cards-error" : ""; };
     const selectedProjectResolution = () => projectResolution(projectAspect.value, projectMegapixels.value);
     const renderProjectResolutionChoice = () => {
@@ -1015,9 +1041,11 @@ function createCardsWorkspace(node) {
     });
     listen("execution_success", (detail) => {
         if (!execution.accepts(detail)) return;
+        const completedAction = execution.action;
         execution.active = false;
         execution.render("Completed", `${execution.action || "LongCaster"} completed`, 1, 1);
         execution.append("info", "Execution completed.");
+        workspace.advanceBatch?.(completedAction);
     });
     listen("execution_interrupted", (detail) => {
         if (!execution.accepts(detail)) return;
@@ -1025,6 +1053,7 @@ function createCardsWorkspace(node) {
         const label = `Interrupted at ${nodeLabel(detail.node ?? detail.node_id)}`;
         execution.render("Interrupted", label);
         execution.append("warning", label);
+        workspace.cancelBatch?.("Batch rendering stopped after interruption.", true);
     });
     listen("execution_error", (detail) => {
         if (!execution.accepts(detail)) return;
@@ -1035,11 +1064,15 @@ function createCardsWorkspace(node) {
         execution.append("error", `${label}: ${error}`);
         const traceback = Array.isArray(detail.traceback) ? detail.traceback.join("") : detail.traceback;
         if (traceback) execution.append("error", traceback);
+        workspace.cancelBatch?.("Batch rendering stopped after an execution error.", true);
     });
     listen("longcaster_log", (detail) => {
         if (execution.active) execution.append(detail.level || "info", detail.message, detail.timestamp);
     });
-    stop.onclick = () => stopAndUnlock(node);
+    stop.onclick = () => {
+        workspace.cancelBatch?.("Batch rendering cancelled.", true);
+        stopAndUnlock(node);
+    };
 
     const shortId = (value) => value ? String(value).slice(0, 8) : "none";
     const cardLabel = (cardId) => {
@@ -1161,6 +1194,7 @@ function createCardsWorkspace(node) {
         const state = workspace.state;
         if (!state) return;
         const card = selectedCard();
+        const batchActive = Boolean(workspace.batch?.active);
         const showingCard = workspace.activeView === "card";
         main.hidden = !showingCard;
         projectView.hidden = showingCard;
@@ -1172,15 +1206,15 @@ function createCardsWorkspace(node) {
         }
         saveLoraWords.disabled = Boolean(state.pending_operation)
             || loraWords.value.trim() === (state.lora_activation_words || "");
-        duplicateProject.disabled = Boolean(state.pending_operation);
-        duplicateAndInvalidate.disabled = Boolean(state.pending_operation);
+        duplicateProject.disabled = batchActive || Boolean(state.pending_operation);
+        duplicateAndInvalidate.disabled = batchActive || Boolean(state.pending_operation);
         if (document.activeElement !== projectAspect && document.activeElement !== projectMegapixels) {
             projectAspect.value = nearestProjectAspect(state.width, state.height);
             projectMegapixels.value = String(Math.round(state.width * state.height / (1024 * 1024) * 1000) / 1000);
         }
-        projectAspect.disabled = projectMegapixels.disabled = !state.resolution_editable || Boolean(state.pending_operation);
+        projectAspect.disabled = projectMegapixels.disabled = batchActive || !state.resolution_editable || Boolean(state.pending_operation);
         const allInvalidated = Boolean(state.cards?.length) && state.cards.every((item) => item.status === "INVALIDATED");
-        invalidateAllRenders.disabled = Boolean(state.pending_operation) || allInvalidated;
+        invalidateAllRenders.disabled = batchActive || Boolean(state.pending_operation) || allInvalidated;
         resolutionLock.textContent = state.resolution_editable
             ? (allInvalidated ? "All cards are invalidated. Resolution can now be changed." : "Resolution can be changed before the first render.")
             : "To change resolution, invalidate all cards first.";
@@ -1256,12 +1290,26 @@ function createCardsWorkspace(node) {
         mode.value = state.generation_mode; mode.disabled = !state.generation_mode_editable;
         mode.title = state.generation_mode_editable ? "Mode can change until the first render." : "Mode is fixed because this project already has rendered media.";
         treatment.value = state.continuation_treatment || "off";
-        treatment.disabled = Boolean(state.pending_operation);
+        treatment.disabled = Boolean(state.pending_operation) || batchActive;
+        colorBaseline.replaceChildren();
+        for (const candidate of state.cards.filter((item) => item.status === "ACCEPTED" && item.timeline_index < card.timeline_index)) {
+            const option = document.createElement("option");
+            option.value = candidate.id;
+            option.textContent = `Card ${candidate.timeline_index + 1}${candidate.title ? ` · ${candidate.title}` : ""}`;
+            colorBaseline.append(option);
+        }
+        colorBaseline.value = card.color_anchor_source_card_id || "";
+        colorBaseline.disabled = !isEditable || card.continuation_strategy !== "direct_mmh3" || state.continuation_treatment !== "color_stable" || !colorBaseline.options.length;
+        colorBaseline.title = state.continuation_treatment !== "color_stable"
+            ? "Enable Drift + Color-Stable AV to use this baseline. The saved choice is retained while treatment is off."
+            : card.continuation_strategy !== "direct_mmh3"
+                ? "Color-Stable baselines apply only to direct MMH3 continuation."
+                : "Select the accepted card whose color statistics should anchor this scene.";
         const refineMode = state.refine_cadence || "off";
         setRefineRadios(refineCadence, refineMode);
         setRefineRadios(subjectRefineCadence, refineMode);
-        disableRefineRadios(refineCadence, Boolean(state.pending_operation));
-        disableRefineRadios(subjectRefineCadence, Boolean(state.pending_operation));
+        disableRefineRadios(refineCadence, Boolean(state.pending_operation) || batchActive);
+        disableRefineRadios(subjectRefineCadence, Boolean(state.pending_operation) || batchActive);
         refineEnabled.checked = Boolean(card.refine_enabled);
         subjectRefineEnabled.checked = Boolean(card.refine_enabled);
         const refineCheckboxDisabled = !isEditable || refineMode !== "manual" || Boolean(state.pending_operation);
@@ -1275,22 +1323,30 @@ function createCardsWorkspace(node) {
         subjectRefine.hidden = workspace.selectedSection !== "subject_definitions";
         strategy.value = card.continuation_strategy || "independent";
         strategy.disabled = !isEditable || !card.timeline_predecessor_id;
-        generate.disabled = card.id !== state.active_card_id || !["EMPTY", "FAILED", "INVALIDATED"].includes(card.status) || Boolean(state.pending_operation);
-        retry.disabled = card.id !== state.active_card_id || card.status !== "DRAFT" || Boolean(state.pending_operation);
+        generate.disabled = batchActive || card.id !== state.active_card_id || !["EMPTY", "FAILED", "INVALIDATED"].includes(card.status) || Boolean(state.pending_operation);
+        retry.disabled = batchActive || card.id !== state.active_card_id || card.status !== "DRAFT" || Boolean(state.pending_operation);
         retryDifferentSeed.disabled = retry.disabled;
         retryDifferentSeed.title = "Assign and save a new random seed, then retry this draft.";
-        accept.disabled = card.id !== state.active_card_id || card.status !== "DRAFT" || card.draft_inputs_dirty || Boolean(state.pending_operation) || Boolean(take && !take.selected);
+        accept.disabled = batchActive || card.id !== state.active_card_id || card.status !== "DRAFT" || card.draft_inputs_dirty || Boolean(state.pending_operation) || Boolean(take && !take.selected);
         accept.title = take && !take.selected ? "Select the take you are viewing before accepting it." : "Accept the selected draft take.";
-        append.disabled = card.id !== state.active_card_id || card.status !== "ACCEPTED" || Boolean(state.pending_operation);
+        const batchPlan = remainingBatchPlan(state);
+        batchRender.textContent = batchActive
+            ? "Cancel Batch After Current Step"
+            : `Render Remaining Drafts${batchPlan ? ` (${batchPlan.renderCount})` : ""}`;
+        batchRender.disabled = !batchActive && (!batchPlan || Boolean(state.pending_operation));
+        batchRender.title = batchActive
+            ? "Stop automatically queueing cards after the current Generate or Accept operation finishes."
+            : batchPlan
+                ? "Generate the remaining invalidated cards in order, automatically accepting intermediates and leaving the final card as a draft."
+                : "Batch rendering requires an active draft followed only by invalidated cards.";
+        append.disabled = batchActive || card.id !== state.active_card_id || card.status !== "ACCEPTED" || Boolean(state.pending_operation);
         const isLastCard = card.timeline_index === state.cards.length - 1;
         const isRemovableDraft = ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status);
         invalidateRender.hidden = card.render_validity !== "VALIDATED";
-        invalidateRender.disabled = !isLastCard || card.id !== state.active_card_id || Boolean(state.pending_operation);
-        invalidateRender.title = !isLastCard || card.id !== state.active_card_id
-            ? "Only the active final card can be invalidated; later cards may depend on this render."
-            : "Permanently delete this card's render lineage while keeping its prompt and editable settings.";
+        invalidateRender.disabled = batchActive || Boolean(state.pending_operation);
+        invalidateRender.title = "Permanently delete this card's render and every later render while retaining their prompts and editable settings.";
         unpublish.hidden = card.status !== "ACCEPTED";
-        unpublish.disabled = !isLastCard || card.id !== state.active_card_id || Boolean(state.pending_operation);
+        unpublish.disabled = batchActive || !isLastCard || card.id !== state.active_card_id || Boolean(state.pending_operation);
         unpublish.title = !isLastCard
             ? "Remove the later unaccepted draft first, then this accepted card can be unpublished to a draft."
             : card.id !== state.active_card_id
@@ -1299,7 +1355,7 @@ function createCardsWorkspace(node) {
                     ? "Wait for the current project operation to finish before unpublishing."
                     : "Reopen this accepted card as a draft, retain its immutable master, and permanently remove its refine derivatives.";
         removeDraft.hidden = !isLastCard || !isRemovableDraft;
-        removeDraft.disabled = card.id !== state.active_card_id || state.cards.length < 2 || Boolean(state.pending_operation);
+        removeDraft.disabled = batchActive || card.id !== state.active_card_id || state.cards.length < 2 || Boolean(state.pending_operation);
         removeDraft.title = state.cards.length < 2
             ? "The first card cannot be removed because there is no previous accepted card."
             : card.has_publication_history
@@ -1669,6 +1725,7 @@ function createCardsWorkspace(node) {
             ref_image_size: card.ref_image_size || "match",
             card_reference_settings: workspace.state.generation_mode === "ref2va" ? referenceSettings(card.card_reference) : null,
             continuation_strategy: card.continuation_strategy,
+            color_anchor_source_card_id: card.color_anchor_source_card_id,
             refine_enabled: Boolean(card.refine_enabled),
         };
         workspace.dirty = false; workspace.dirtySections.clear();
@@ -1737,7 +1794,122 @@ function createCardsWorkspace(node) {
         if (!await flush()) return;
         if (workspace.state?.project === project && workspace.requestedProject === project) await load(project);
     };
+
+    function cancelBatch(message = "Batch rendering cancelled.", error = false) {
+        if (!workspace.batch?.active) return false;
+        workspace.batch.active = false;
+        workspace.batch = null;
+        setMessage(message, error);
+        render();
+        return true;
+    }
+    workspace.cancelBatch = cancelBatch;
+
+    async function queueBatchStep(action) {
+        const batch = workspace.batch;
+        if (!batch?.active) return false;
+        batch.expectedAction = action;
+        workspace.followActive = true;
+        setMessage(
+            `Batch ${action === "accept" ? "accepting" : "rendering"} Card ${batch.currentIndex + 1} of ${batch.lastIndex + 1}…`
+        );
+        render();
+        const queued = await queueAction(node, action);
+        if (queued === null) {
+            cancelBatch("Batch rendering stopped because the next operation could not be queued.", true);
+            return false;
+        }
+        return true;
+    }
+
+    async function advanceBatch(completedAction) {
+        const batch = workspace.batch;
+        if (!batch?.active || batch.advancing || completedAction !== batch.expectedAction) return;
+        batch.advancing = true;
+        try {
+            if (workspace.state?.project !== batch.project || !await load(batch.project)) {
+                cancelBatch("Batch rendering stopped because its project could not be refreshed.", true);
+                return;
+            }
+            const state = workspace.state;
+            const activeCard = state.cards.find((card) => card.id === state.active_card_id);
+            if (!activeCard) {
+                cancelBatch("Batch rendering stopped because the active card is unavailable.", true);
+                return;
+            }
+            batch.currentIndex = activeCard.timeline_index;
+            if (completedAction === "generate") {
+                if (activeCard.id !== batch.expectedCardId || activeCard.status !== "DRAFT") {
+                    cancelBatch(`Batch rendering stopped: Card ${activeCard.timeline_index + 1} did not produce a draft.`, true);
+                    return;
+                }
+                batch.rendered += 1;
+                if (activeCard.id === batch.lastCardId) {
+                    const rendered = batch.rendered;
+                    workspace.batch = null;
+                    setMessage(`Batch complete. Rendered ${rendered} card${rendered === 1 ? "" : "s"}; the final card remains a draft for review.`);
+                    render();
+                    return;
+                }
+                if (activeCard.draft_inputs_dirty) {
+                    cancelBatch(`Batch rendering stopped: Card ${activeCard.timeline_index + 1} changed after rendering.`, true);
+                    return;
+                }
+                await queueBatchStep("accept");
+                return;
+            }
+            if (completedAction === "accept") {
+                const acceptedCard = state.cards.find((card) => card.id === batch.expectedCardId);
+                if (acceptedCard?.status !== "ACCEPTED") {
+                    cancelBatch("Batch rendering stopped because the intermediate draft was not accepted.", true);
+                    return;
+                }
+                if (!["EMPTY", "FAILED", "INVALIDATED"].includes(activeCard.status)) {
+                    cancelBatch("Batch rendering stopped because acceptance did not activate the next draft card.", true);
+                    return;
+                }
+                batch.expectedCardId = activeCard.id;
+                await queueBatchStep("generate");
+            }
+        } finally {
+            if (workspace.batch) workspace.batch.advancing = false;
+        }
+    }
+    workspace.advanceBatch = advanceBatch;
+
+    async function startBatchRender() {
+        if (workspace.batch?.active) {
+            cancelBatch("Batch will stop after the current operation. The current operation was not interrupted.");
+            return;
+        }
+        if (!await flush()) return;
+        const plan = remainingBatchPlan(workspace.state);
+        if (!plan) {
+            setMessage("Batch rendering requires the active card followed only by invalidated cards.", true);
+            return;
+        }
+        const activeCard = workspace.state.cards.find((card) => card.id === plan.firstCardId);
+        const finalCard = workspace.state.cards.find((card) => card.id === plan.lastCardId);
+        const warning = `Render ${plan.renderCount} remaining card${plan.renderCount === 1 ? "" : "s"} from Card ${activeCard.timeline_index + 1} through Card ${finalCard.timeline_index + 1}? Intermediate drafts will be accepted automatically, including any configured Optional Source Refine. Drift/Color-Stable settings remain active. The final card will remain a draft for review. Keep LongCaster Studio open while the batch runs.`;
+        if (!confirm(warning)) return;
+        workspace.selectedCardId = activeCard.id;
+        workspace.viewedTakeId = activeCard.selected_draft_take_id || null;
+        workspace.batch = {
+            active: true,
+            advancing: false,
+            project: workspace.state.project,
+            lastCardId: plan.lastCardId,
+            lastIndex: finalCard.timeline_index,
+            currentIndex: activeCard.timeline_index,
+            expectedCardId: activeCard.id,
+            expectedAction: null,
+            rendered: 0,
+        };
+        await queueBatchStep(plan.firstAction);
+    }
+
     workspace.switchProject = async (project) => {
+        cancelBatch("Batch rendering cancelled because the project changed.");
         if (!await flush()) {
             if (workspace.state) {
                 syncProjectNode(node, workspace.state);
@@ -2107,6 +2279,33 @@ function createCardsWorkspace(node) {
         setMessage(queuedMessage); queueAction(node, action);
     }
 
+    async function invalidateFromSelectedCard() {
+        if (!await flush()) return;
+        const card = selectedCard();
+        if (!card) return;
+        const count = workspace.state.cards.length - card.timeline_index;
+        const warning = `Invalidate Card ${card.timeline_index + 1} and ${count - 1} later card${count - 1 === 1 ? "" : "s"}? This permanently deletes render artifacts for ${count} card${count === 1 ? "" : "s"}, including masters, draft takes, previews, refinements, and anchors. Prompts, card settings, and the accepted prefix will remain. Card ${card.timeline_index + 1} will become the active card for regeneration.`;
+        if (!confirm(warning)) return;
+        try {
+            setMessage("Invalidating this card and its tail…");
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/invalidate-tail", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    project: workspace.state.project,
+                    revision: workspace.state.revision,
+                    card_id: card.id,
+                }),
+            }));
+            workspace.selectedCardId = card.id;
+            workspace.viewedTakeId = null;
+            updateState(body);
+            setMessage(body.message || "Card tail invalidated.");
+        } catch (error) {
+            setMessage(`Tail invalidation failed: ${error.message}`, true);
+        }
+    }
+
     function retryWithDifferentSeed() {
         const card = selectedCard();
         if (!card || card.status !== "DRAFT") return;
@@ -2140,7 +2339,19 @@ function createCardsWorkspace(node) {
         try { globalThis.localStorage?.setItem("longcaster.pictureRailOpen", String(workspace.pictureRailOpen)); } catch (_) {}
         render();
     };
-    strategy.onchange = () => { selectedCard().continuation_strategy = strategy.value; markDirty(); };
+    strategy.onchange = () => {
+        const card = selectedCard();
+        card.continuation_strategy = strategy.value;
+        if (strategy.value === "direct_mmh3") {
+            const predecessor = workspace.state.cards.find((item) => item.id === card.timeline_predecessor_id);
+            card.color_anchor_source_card_id = predecessor?.color_anchor_source_card_id || predecessor?.id || card.id;
+        } else {
+            card.color_anchor_source_card_id = card.id;
+        }
+        markDirty();
+        render();
+    };
+    colorBaseline.onchange = () => { selectedCard().color_anchor_source_card_id = colorBaseline.value; markDirty(); };
     mode.onchange = () => saveProjectMode();
     treatment.onchange = () => saveContinuationTreatment(treatment.value);
     projectAspect.onchange = () => renderProjectResolutionChoice();
@@ -2217,6 +2428,7 @@ function createCardsWorkspace(node) {
     retry.onclick = () => runAction("retry");
     retryDifferentSeed.onclick = () => retryWithDifferentSeed();
     accept.onclick = () => runAction("accept");
+    batchRender.onclick = () => startBatchRender();
     append.onclick = () => runAction("append");
     unpublish.onclick = () => {
         const card = selectedCard();
@@ -2224,10 +2436,7 @@ function createCardsWorkspace(node) {
         runAction("unpublish");
     };
     invalidateRender.onclick = () => {
-        const card = selectedCard();
-        if (!card) return;
-        const warning = "Invalidate this card's render? This permanently deletes its MMH3 master and draft takes, previews, refinements, anchors, and superseded publications. The prompt and editable card settings remain so you can Generate Draft again with the current model setup.";
-        if (confirm(warning)) runAction("invalidate", "Render invalidation queued…");
+        invalidateFromSelectedCard();
     };
     createRefine.onclick = () => runAction("create_refine");
     useAcceptedMaster.onclick = () => setContinuationSource("accepted_master");

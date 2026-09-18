@@ -593,7 +593,7 @@ class LongCasterProject:
             width=width, height=height, ref_image_size=ref_image_size, video_vae=video_vae,
         )
         identity_anchor = (
-            store.active_identity_anchor(manifest) if use_identity_anchor else None
+            store.generation_identity_anchor(manifest) if use_identity_anchor else None
         )
         identity_image = None
         identity_picture_index = None
@@ -727,6 +727,7 @@ class LongCasterProject:
             (item for item in manifest["cards"] if item["id"] == color_anchor_card_id),
             None,
         )
+        color_vae_identity = vae_identity(video_vae) if treatment_mode == "color_stable" else None
         treatment_recipe = {
             "mode": treatment_mode,
             "applies_to": "direct_mmh3_continuation_only",
@@ -745,7 +746,7 @@ class LongCasterProject:
                 generation_fingerprint({"sigmas": sigma_schedule})
                 if treatment_mode != "off" else None
             ),
-            "video_vae": vae_identity(video_vae) if treatment_mode == "color_stable" else None,
+            "video_vae": color_vae_identity,
         }
         recipe = {
             "version": 1,
@@ -812,6 +813,7 @@ class LongCasterProject:
                 **treatment_recipe, "active": False,
                 "reason": "not_a_direct_continuation",
             }
+            color_baseline_stats_record = None
             if continuation_strategy == "direct_mmh3":
                 if continuation_source is None:
                     raise ProjectError("direct continuation has no resolved source")
@@ -829,6 +831,7 @@ class LongCasterProject:
                     context_frames=context_frames,
                 )
                 anchor_packet = None
+                persisted_anchor_stats = None
                 anchor_hash = (
                     color_anchor_recipe_card.get("artifact_sha256")
                     if color_anchor_recipe_card else None
@@ -841,15 +844,28 @@ class LongCasterProject:
                     if anchor_card is None or anchor_card.get("status") != "ACCEPTED":
                         raise ProjectError("Color-Stable Drift AV baseline card is unavailable")
                     anchor_hash = anchor_card.get("artifact_sha256")
-                    anchor_packet, _ = _packet_for_artifact(
-                        store, relative=anchor_card.get("master_path"),
-                        artifact_sha256=anchor_hash, label="color baseline source",
-                    )
+                    cached_record = manifest.get("color_baseline_stats", {}).get(color_anchor_card_id)
+                    if (
+                        isinstance(cached_record, dict)
+                        and cached_record.get("artifact_sha256") == anchor_hash
+                        and cached_record.get("width") == int(width)
+                        and cached_record.get("height") == int(height)
+                        and cached_record.get("vae_fingerprint") == (color_vae_identity or {}).get("fingerprint")
+                        and cached_record.get("algorithm_version") == COLOR_STABLE_RECIPE["version"]
+                        and isinstance(cached_record.get("statistics"), dict)
+                    ):
+                        persisted_anchor_stats = cached_record["statistics"]
+                    else:
+                        anchor_packet, _ = _packet_for_artifact(
+                            store, relative=anchor_card.get("master_path"),
+                            artifact_sha256=anchor_hash, label="color baseline source",
+                        )
                 policy = prepare_continuation_policy(
                     target_latent, continuation_plan, mode=treatment_mode,
                     video_vae=video_vae, source_packet=parent_packet,
                     source_sha256=continuation_source["artifact_sha256"],
-                    anchor_packet=anchor_packet, anchor_sha256=anchor_hash,
+                    anchor_packet=anchor_packet, anchor_stats=persisted_anchor_stats,
+                    anchor_sha256=anchor_hash,
                     anchor_card_id=color_anchor_card_id,
                     source_card_id=continuation_source["source_card_id"],
                     width=width, height=height,
@@ -861,6 +877,27 @@ class LongCasterProject:
                     "preparation_seconds": policy.preparation_seconds,
                     "sigmas_sha256": generation_fingerprint({"sigmas": sigma_schedule}),
                 }
+                if treatment_mode == "color_stable" and isinstance(
+                    treatment_report.get("stats_cache"), dict
+                ):
+                    treatment_report["stats_cache"]["anchor_persistent_hit"] = (
+                        persisted_anchor_stats is not None
+                    )
+                if (
+                    treatment_mode == "color_stable"
+                    and color_anchor_card_id != continuation_source["source_card_id"]
+                    and persisted_anchor_stats is None
+                    and isinstance(policy.provenance.get("anchor_stats"), dict)
+                ):
+                    color_baseline_stats_record = {
+                        "card_id": color_anchor_card_id,
+                        "artifact_sha256": anchor_hash,
+                        "width": int(width),
+                        "height": int(height),
+                        "vae_fingerprint": color_vae_identity["fingerprint"],
+                        "algorithm_version": COLOR_STABLE_RECIPE["version"],
+                        "statistics": policy.provenance["anchor_stats"],
+                    }
             if anchor_image is not None:
                 positive = apply_native_anchor(
                     positive=positive,
@@ -936,6 +973,7 @@ class LongCasterProject:
                 generated_frame_count=duration.generated_frames,
                 actual_new_frame_count=duration.actual_new_frames,
                 actual_duration_seconds=duration.actual_new_seconds,
+                color_baseline_stats=color_baseline_stats_record,
             )
             return self._result(
                 saved_packet,

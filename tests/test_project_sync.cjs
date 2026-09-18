@@ -69,6 +69,47 @@ test("Continuation treatment exposes all backward-compatible project modes", () 
     assert.match(source, /Drift-Control AV/);
     assert.match(source, /Drift \+ Color-Stable AV/);
     assert.match(source, /continuation_treatment: requested/);
+    assert.match(source, /It runs independently of optional source refinement/);
+    assert.match(source, /Optional source refine/);
+});
+
+test("Cards UI invalidates a selected card and its complete tail", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Invalidate From This Card/);
+    assert.match(source, /\/longcaster\/cards\/invalidate-tail/);
+    assert.match(source, /Card .* will become the active card for regeneration/);
+});
+
+test("remaining batch plan accepts intermediates and leaves the final draft", () => {
+    const { context } = frontend();
+    const state = {
+        active_card_id: "three",
+        cards: [
+            {id: "one", status: "ACCEPTED", timeline_index: 0},
+            {id: "two", status: "ACCEPTED", timeline_index: 1},
+            {id: "three", status: "INVALIDATED", timeline_index: 2},
+            {id: "four", status: "INVALIDATED", timeline_index: 3},
+            {id: "five", status: "INVALIDATED", timeline_index: 4},
+        ],
+    };
+    const plan = context.remainingBatchPlan(state);
+    assert.equal(plan.firstAction, "generate");
+    assert.equal(plan.renderCount, 3);
+    assert.equal(plan.lastCardId, "five");
+
+    state.cards[2].status = "DRAFT";
+    assert.equal(context.remainingBatchPlan(state).firstAction, "accept");
+    state.cards[3].status = "ACCEPTED";
+    assert.equal(context.remainingBatchPlan(state), null);
+});
+
+test("Cards UI exposes guarded sequential batch rendering", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Render Remaining Drafts/);
+    assert.match(source, /Intermediate drafts will be accepted automatically/);
+    assert.match(source, /the final card remains a draft for review/);
+    assert.match(source, /workspace\.advanceBatch/);
+    assert.match(source, /Batch rendering stopped after an execution error/);
 });
 
 test("shifted refine widgets from the first treatment release are repaired", () => {
