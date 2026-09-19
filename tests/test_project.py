@@ -137,7 +137,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(migrated["color_baseline_stats"], {})
         self.assertEqual(card["ref_image_size"], "max")
         self.assertEqual(card["draft_takes"][0]["ref_image_size"], "max")
@@ -290,7 +290,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -315,7 +315,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -326,7 +326,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -425,7 +425,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(resolved["anchor_id"], anchor_id)
         self.assertEqual(resolved["subject_id"], "<Subject 4>")
 
-    def test_generation_rejects_multiple_enabled_identity_bindings(self):
+    def test_generation_resolves_one_enabled_identity_binding_per_subject(self):
         self._draft()
         manifest = self.store.accept()
         card = self.store.active_card(manifest)
@@ -445,8 +445,11 @@ class ProjectStoreTests(unittest.TestCase):
                 "subject_id": subject, "label": subject,
                 "mode": "MiniMaxH3ReferenceToVideo/minimax_refs", "strength": None,
             })
-        with self.assertRaisesRegex(ProjectError, "supports one active identity checkpoint"):
-            self.store.generation_identity_anchor(manifest)
+        resolved = self.store.generation_identity_anchors(manifest, card)
+        self.assertEqual(
+            [item["subject_id"] for item in resolved],
+            ["<Subject 2>", "<Subject 4>"],
+        )
 
     def test_schema_four_identity_anchor_migrates_to_face_only(self):
         manifest = self._draft()
@@ -480,7 +483,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -840,7 +843,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         migrated_card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(len(migrated_card["draft_takes"]), 1)
         self.assertEqual(
             migrated_card["selected_draft_take_id"], migrated_card["draft_takes"][0]["id"]
@@ -857,7 +860,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(card["selected_draft_take_id"], original_take_id)
         self.assertEqual(len(card["draft_takes"]), 1)
 
@@ -1017,7 +1020,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(card["prompt_format"], "legacy_flat")
         self.assertEqual(card["prompt"], original)
         self.assertEqual(card["assembled_prompt"], original)
@@ -1043,7 +1046,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = store.load()
         card = store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertIn("summary:\nA player enters the court.", card["assembled_prompt"])
         self.assertNotIn("<summary>", card["assembled_prompt"])
         self.assertEqual(card["prompt"], card["assembled_prompt"])
@@ -1422,7 +1425,7 @@ class ProjectStoreTests(unittest.TestCase):
         raw["cards"][0].pop("color_anchor_source_card_id", None)
         self.store.manifest_path.write_text(json.dumps(raw), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 17)
+        self.assertEqual(migrated["schema_version"], 19)
         self.assertEqual(migrated["continuation_treatment"], "off")
         self.assertEqual(
             migrated["cards"][0]["color_anchor_source_card_id"],

@@ -430,19 +430,25 @@ def reinforce_prompt(
     identity_picture_index: int | None = None,
     identity_scope: str = "face_only",
     custom_identity_instruction: str | None = None,
+    identity_anchors: list[dict[str, Any]] | None = None,
 ) -> tuple[str, bool, list[str]]:
     """Add concise active-anchor semantics without rewriting the user prompt."""
     state_instruction = CONTINUITY_INSTRUCTION if current_state_active else None
-    identity_text = None
-    if identity_subject_id is not None and identity_picture_index is not None:
-        identity_text = identity_instruction(
-            identity_subject_id,
-            identity_picture_index,
-            identity_scope,
+    identity_texts: list[str] = []
+    if identity_anchors is not None:
+        for item in identity_anchors:
+            identity_texts.append(identity_instruction(
+                item["subject_id"], item["picture_index"],
+                item.get("identity_scope", "face_only"),
+                item.get("custom_identity_instruction"),
+            ))
+    elif identity_subject_id is not None and identity_picture_index is not None:
+        identity_texts.append(identity_instruction(
+            identity_subject_id, identity_picture_index, identity_scope,
             custom_identity_instruction,
-        )
+        ))
 
-    candidates = [item for item in (state_instruction, identity_text) if item]
+    candidates = [item for item in ([state_instruction] + identity_texts) if item]
     candidates = [item for item in candidates if item.casefold() not in prompt.casefold()]
     if not candidates:
         return prompt, False, []
@@ -453,7 +459,9 @@ def reinforce_prompt(
     section_instructions = {
         "summary": [item for item in (state_instruction,) if item in candidates],
         # Identity scope is deliberately first and appears only in retention_analysis.
-        "retention_analysis": [item for item in (identity_text, state_instruction) if item in candidates],
+        "retention_analysis": [
+            item for item in (*identity_texts, state_instruction) if item in candidates
+        ],
     }
     for section, instructions in section_instructions.items():
         if not instructions:

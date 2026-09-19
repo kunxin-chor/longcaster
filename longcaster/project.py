@@ -28,13 +28,14 @@ from .prompt_sections import (
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 19
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
 CONTINUATION_STRATEGIES = {"independent", "direct_mmh3", "image_restart"}
 CONTINUATION_TREATMENTS = {"off", "drift_control", "color_stable"}
 REF_IMAGE_SIZES = {"match", "max"}
+IDENTITY_ANCHOR_OVERRIDES = {"project", "enabled", "disabled"}
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 _WINDOWS_RESERVED = {
     "CON", "PRN", "AUX", "NUL",
@@ -184,6 +185,7 @@ def _new_card(
         "continuation_source": continuation_source,
         "continuation_source_preference": "accepted_master",
         "color_anchor_source_card_id": parent_id or card_id,
+        "identity_anchor_overrides": {},
         "refine_enabled": False,
         "derivatives": [],
         "reference_set": None,
@@ -233,6 +235,7 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
         "continuation_strategy": card.get("continuation_strategy"),
         "continuation_source": deepcopy(card.get("continuation_source")),
         "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
+        "identity_anchor_overrides": deepcopy(card.get("identity_anchor_overrides", {})),
         "recipe": deepcopy(card.get("recipe")),
         "generation_fingerprint": card.get("generation_fingerprint"),
         "reference_set": deepcopy(card.get("reference_set")),
@@ -246,7 +249,7 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
 
 
 def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
-    """Mirror an immutable selected take into the legacy/current card fields."""
+    """Restore an immutable take, including its prompt and seed, to the card."""
     card.update({
         "prompt": take["prompt"],
         "prompt_format": take["prompt_format"],
@@ -260,6 +263,7 @@ def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
         "continuation_strategy": take["continuation_strategy"],
         "continuation_source": deepcopy(take.get("continuation_source")),
         "color_anchor_source_card_id": take.get("color_anchor_source_card_id"),
+        "identity_anchor_overrides": deepcopy(take.get("identity_anchor_overrides", {})),
         "recipe": deepcopy(take["recipe"]),
         "generation_fingerprint": take["generation_fingerprint"],
         "reference_set": deepcopy(take.get("reference_set")),
@@ -330,7 +334,8 @@ class ProjectStore:
                 return self._load_unlocked()
             self.path.mkdir(parents=True, exist_ok=True)
             for directory in (
-                "clips", "drafts", "transactions", "previews", "anchors", "derivatives"
+                "clips", "drafts", "transactions", "previews", "anchors",
+                "identity_imports", "derivatives"
             ):
                 (self.path / directory).mkdir(exist_ok=True)
             first = _new_card(
@@ -358,6 +363,7 @@ class ProjectStore:
                 "active_card_id": first["id"],
                 "cards": [first],
                 "active_identity_anchors": {},
+                "imported_identity_anchors": [],
                 "color_baseline_stats": {},
                 "pending_operation": None,
                 "last_operation": None,
@@ -727,6 +733,7 @@ class ProjectStore:
                 "derivatives": [],
                 "continuation_source_preference": "accepted_master",
                 "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
+                "identity_anchor_overrides": deepcopy(card.get("identity_anchor_overrides", {})),
             })
             for publication in history:
                 publication["derivatives"] = []
@@ -1476,7 +1483,17 @@ class ProjectStore:
                     else:
                         card["continuation_source"] = None
                 manifest["active_card_id"] = manifest["cards"][0]["id"]
-                manifest["active_identity_anchors"] = {}
+                imported_ids = {
+                    item.get("anchor_id")
+                    for item in manifest.get("imported_identity_anchors", [])
+                }
+                manifest["active_identity_anchors"] = {
+                    subject_id: anchor_id
+                    for subject_id, anchor_id in manifest.get(
+                        "active_identity_anchors", {}
+                    ).items()
+                    if anchor_id in imported_ids
+                }
                 manifest["color_baseline_stats"] = {}
                 manifest["last_operation"] = {
                     "id": operation_id,
@@ -1600,6 +1617,7 @@ class ProjectStore:
             anchors.append(stored_anchor)
             subject_id = stored_anchor["subject_id"]
             manifest.setdefault("active_identity_anchors", {})[subject_id] = stored_anchor["anchor_id"]
+            self._dirty_draft_for_identity_change(manifest, subject_id, selection_changed=True)
             card["updated_at"] = utc_now()
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()), "kind": "set_identity_anchor", "status": "complete",
@@ -1616,8 +1634,10 @@ class ProjectStore:
                 raise ProjectError("cannot change an identity anchor while generation is pending")
             anchor = self._bound_identity_anchor(manifest, subject_id)
             anchor["enabled"] = bool(enabled)
-            source = self._card(manifest, anchor["source_card_id"])
-            source["updated_at"] = utc_now()
+            self._dirty_draft_for_identity_change(manifest, subject_id)
+            if anchor.get("source_card_id") is not None:
+                source = self._card(manifest, anchor["source_card_id"])
+                source["updated_at"] = utc_now()
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()),
                 "kind": "enable_identity_anchor" if enabled else "disable_identity_anchor",
@@ -1641,9 +1661,7 @@ class ProjectStore:
                 raise ProjectError("subject_id cannot be empty")
             anchor = next(
                 (
-                    item
-                    for card in manifest["cards"]
-                    for item in card.get("anchors", [])
+                    item for item in self._identity_anchor_records(manifest)
                     if item.get("anchor_id") == anchor_id and item.get("role") == "identity"
                 ),
                 None,
@@ -1654,6 +1672,7 @@ class ProjectStore:
                 raise ProjectError("identity anchor belongs to a different subject")
             anchor["enabled"] = True
             manifest.setdefault("active_identity_anchors", {})[subject] = anchor_id
+            self._dirty_draft_for_identity_change(manifest, subject, selection_changed=True)
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()),
                 "kind": "bind_identity_anchor",
@@ -1665,6 +1684,91 @@ class ProjectStore:
             self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
+    def import_identity_anchor(
+        self, *, expected_revision: int, image_bytes: bytes, subject_id: str,
+        label: str = "", identity_scope: str = "face_only",
+        custom_identity_instruction: str = "",
+    ) -> dict[str, Any]:
+        """Import a project-owned identity image with no card/render dependency."""
+        import io
+        from PIL import Image, ImageOps
+
+        subject = str(subject_id).strip()
+        if not subject:
+            raise ProjectError("identity anchor subject_id cannot be empty")
+        scope = str(identity_scope or "face_only").strip().lower()
+        custom = str(custom_identity_instruction or "").strip()
+        if scope not in IDENTITY_SCOPES:
+            raise ProjectError("identity anchor has an invalid identity_scope")
+        if scope == "custom" and not custom:
+            raise ProjectError("custom identity scope requires a custom identity instruction")
+        if len(image_bytes) > 32 * 1024 * 1024:
+            raise ProjectError("identity image upload exceeds 32 MiB")
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as source:
+                if source.width * source.height > 32_000_000:
+                    raise ProjectError("identity image exceeds 32 million pixels")
+                image = ImageOps.exif_transpose(source).convert("RGB")
+        except (OSError, ValueError, Image.DecompressionBombError) as exc:
+            raise ProjectError("identity upload must be a readable image") from exc
+
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot import an identity anchor while generation is pending")
+            if manifest.get("generation_mode") != "ref2va":
+                raise ProjectError("identity anchors currently require a REF2VA project")
+            anchor_id = str(uuid.uuid4())
+            destination = self.absolute_path(f"identity_imports/{anchor_id}.png")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                with temporary.open("xb") as handle:
+                    image.save(handle, format="PNG")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+                anchor = {
+                    "anchor_id": anchor_id,
+                    "source_card_id": None,
+                    "source_card_artifact_number": None,
+                    "source_preview_frame_index": None,
+                    "source_frame_index": None,
+                    "source_preview_timestamp_seconds": None,
+                    "source_timestamp_seconds": None,
+                    "role": "identity",
+                    "subject_id": subject,
+                    "label": str(label).strip() or None,
+                    "asset_path": self.relative_path(destination),
+                    "asset_sha256": sha256_file(destination),
+                    "media_type": "image/png",
+                    "created_at": utc_now(),
+                    "enabled": True,
+                    "mode": "MiniMaxH3ReferenceToVideo/minimax_refs",
+                    "strength": None,
+                    "identity_scope": scope,
+                    "custom_identity_instruction": custom if scope == "custom" else None,
+                    "selection_source": "imported_image",
+                }
+                manifest.setdefault("imported_identity_anchors", []).append(anchor)
+                manifest.setdefault("active_identity_anchors", {})[subject] = anchor_id
+                self._dirty_draft_for_identity_change(
+                    manifest, subject, selection_changed=True
+                )
+                manifest["last_operation"] = {
+                    "id": str(uuid.uuid4()), "kind": "import_identity_anchor",
+                    "status": "complete", "anchor_id": anchor_id,
+                    "subject_id": subject, "ended_at": utc_now(),
+                }
+                self._commit_unlocked(manifest)
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
+            finally:
+                temporary.unlink(missing_ok=True)
+            return deepcopy(manifest)
+
     def clear_identity_anchor(self, subject_id: str) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -1672,6 +1776,7 @@ class ProjectStore:
                 raise ProjectError("cannot clear an identity anchor while generation is pending")
             bindings = manifest.setdefault("active_identity_anchors", {})
             previous = bindings.pop(subject_id, None)
+            self._dirty_draft_for_identity_change(manifest, subject_id, selection_changed=True)
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()), "kind": "clear_identity_anchor", "status": "complete",
                 "anchor_id": previous, "subject_id": subject_id, "ended_at": utc_now(),
@@ -1702,7 +1807,17 @@ class ProjectStore:
                 if match is not None:
                     owner, anchor = card, match
                     break
-            if owner is None or anchor is None:
+            imported = False
+            if anchor is None:
+                anchor = next(
+                    (
+                        item for item in manifest.get("imported_identity_anchors", [])
+                        if item.get("anchor_id") == anchor_id
+                    ),
+                    None,
+                )
+                imported = anchor is not None
+            if anchor is None:
                 raise ProjectError("identity anchor does not exist")
 
             asset = self.absolute_path(anchor["asset_path"])
@@ -1713,17 +1828,26 @@ class ProjectStore:
             ]
             for subject_id in unbound_subjects:
                 del bindings[subject_id]
-            owner["anchors"] = [
-                item for item in owner.get("anchors", [])
-                if item.get("anchor_id") != anchor_id
-            ]
+                self._dirty_draft_for_identity_change(
+                    manifest, subject_id, selection_changed=True
+                )
+            if imported:
+                manifest["imported_identity_anchors"] = [
+                    item for item in manifest.get("imported_identity_anchors", [])
+                    if item.get("anchor_id") != anchor_id
+                ]
+            else:
+                owner["anchors"] = [
+                    item for item in owner.get("anchors", [])
+                    if item.get("anchor_id") != anchor_id
+                ]
             asset_relative = anchor["asset_path"]
             asset_still_referenced = any(
                 item.get("asset_path") == asset_relative
-                for card in manifest["cards"]
-                for item in card.get("anchors", [])
+                for item in self._identity_anchor_records(manifest)
             )
-            owner["updated_at"] = utc_now()
+            if owner is not None:
+                owner["updated_at"] = utc_now()
             manifest["last_operation"] = {
                 "id": str(uuid.uuid4()),
                 "kind": "delete_identity_anchor",
@@ -1763,23 +1887,63 @@ class ProjectStore:
             return None
         return anchor
 
-    def generation_identity_anchor(self, manifest: dict[str, Any]) -> dict[str, Any] | None:
-        """Resolve the one enabled identity binding supported by generation."""
+    def generation_identity_anchors(
+        self, manifest: dict[str, Any], card: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Resolve one selected checkpoint per subject with card-local overrides."""
         active: list[dict[str, Any]] = []
-        for subject_id in manifest.get("active_identity_anchors", {}):
+        overrides = card.get("identity_anchor_overrides", {})
+        for subject_id in sorted(
+            manifest.get("active_identity_anchors", {}), key=lambda value: value.casefold()
+        ):
             try:
                 anchor = self._bound_identity_anchor(manifest, subject_id)
             except ProjectError:
                 continue
-            if anchor.get("enabled", True):
-                active.append(anchor)
-        if len(active) > 1:
-            subjects = ", ".join(sorted(str(item.get("subject_id")) for item in active))
-            raise ProjectError(
-                "generation currently supports one active identity checkpoint; "
-                f"clear or disable all but one of: {subjects}"
+            policy = overrides.get(subject_id, "project")
+            enabled = (
+                True if policy == "enabled"
+                else False if policy == "disabled"
+                else bool(anchor.get("enabled", True))
             )
-        return deepcopy(active[0]) if active else None
+            if enabled:
+                resolved = deepcopy(anchor)
+                resolved["card_override"] = policy
+                active.append(resolved)
+        return active
+
+    @staticmethod
+    def _dirty_draft_for_identity_change(
+        manifest: dict[str, Any], subject_id: str, *, selection_changed: bool = False
+    ) -> None:
+        card = next(
+            (
+                item for item in manifest.get("cards", [])
+                if item.get("id") == manifest.get("active_card_id")
+            ),
+            None,
+        )
+        if (
+            card is not None
+            and card.get("status") == "DRAFT"
+            and (
+                card.get("identity_anchor_overrides", {}).get(subject_id, "project")
+                == "project"
+                or (
+                    selection_changed
+                    and card.get("identity_anchor_overrides", {}).get(subject_id)
+                    == "enabled"
+                )
+            )
+        ):
+            card["draft_inputs_dirty"] = True
+            card["updated_at"] = utc_now()
+
+    def generation_identity_anchor(self, manifest: dict[str, Any]) -> dict[str, Any] | None:
+        """Backward-compatible singular lookup for legacy callers."""
+        card = self._active_card(manifest)
+        active = self.generation_identity_anchors(manifest, card)
+        return active[0] if len(active) == 1 else None
 
     def select_draft_take(
         self, *, card_id: str, take_id: str, expected_revision: int
@@ -2008,6 +2172,7 @@ class ProjectStore:
         card_reference_settings: dict[str, Any] | None = None,
         continuation_strategy: str | None = None,
         color_anchor_source_card_id: str | None = None,
+        identity_anchor_overrides: dict[str, str] | None = None,
         refine_enabled: bool | None = None,
         convert_legacy: bool = False,
         import_prompt: str | None = None,
@@ -2028,6 +2193,7 @@ class ProjectStore:
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
                 deepcopy(card.get("card_reference")), card.get("color_anchor_source_card_id"),
+                deepcopy(card.get("identity_anchor_overrides", {})),
             )
             if card_reference_settings is not None:
                 from .card_reference import validate_reference
@@ -2147,10 +2313,24 @@ class ProjectStore:
                     ):
                         raise ProjectError("color baseline must be an earlier accepted card")
                 card["color_anchor_source_card_id"] = baseline_id
+            if identity_anchor_overrides is not None:
+                if not isinstance(identity_anchor_overrides, dict):
+                    raise ProjectError("identity_anchor_overrides must be an object")
+                normalized: dict[str, str] = {}
+                for subject_id, policy in identity_anchor_overrides.items():
+                    subject = str(subject_id).strip()
+                    value = str(policy)
+                    if not subject or value not in IDENTITY_ANCHOR_OVERRIDES:
+                        raise ProjectError(
+                            "identity anchor overrides require non-empty subjects and project, enabled, or disabled values"
+                        )
+                    normalized[subject] = value
+                card["identity_anchor_overrides"] = normalized
             if card["status"] == "DRAFT" and previous_inputs != (
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
                 card.get("card_reference"), card.get("color_anchor_source_card_id"),
+                card.get("identity_anchor_overrides", {}),
             ):
                 card["draft_inputs_dirty"] = True
             card["updated_at"] = utc_now()
@@ -2590,6 +2770,17 @@ class ProjectStore:
                     errors.append(
                         f"card {card['artifact_number']}: invalid refine derivative: {exc}"
                     )
+        for anchor in manifest.get("imported_identity_anchors", []):
+            try:
+                anchor_path = self.absolute_path(anchor["asset_path"])
+                if not anchor_path.is_file():
+                    errors.append(f"missing imported identity {anchor['asset_path']}")
+                elif sha256_file(anchor_path) != anchor.get("asset_sha256"):
+                    errors.append(
+                        f"imported identity hash mismatch for {anchor['asset_path']}"
+                    )
+            except (KeyError, ProjectError) as exc:
+                errors.append(f"invalid imported identity: {exc}")
         return errors
 
     def _load_unlocked(self) -> dict[str, Any]:
@@ -2703,6 +2894,13 @@ class ProjectStore:
                     raise ProjectError("direct continuation color baseline must be an earlier accepted card")
             if card.get("ref_image_size") not in REF_IMAGE_SIZES:
                 raise ProjectError("card ref_image_size must be match or max")
+            identity_overrides = card.get("identity_anchor_overrides")
+            if not isinstance(identity_overrides, dict) or any(
+                not isinstance(subject, str) or not subject.strip()
+                or policy not in IDENTITY_ANCHOR_OVERRIDES
+                for subject, policy in identity_overrides.items()
+            ):
+                raise ProjectError("card identity_anchor_overrides are invalid")
             if card.get("continuation_strategy") == "independent" and parent_id is not None:
                 raise ProjectError("independent cards cannot have a generation parent")
             if (
@@ -2793,6 +2991,13 @@ class ProjectStore:
                     raise ProjectError("draft take continuation_strategy is invalid")
                 if take.get("ref_image_size") not in REF_IMAGE_SIZES:
                     raise ProjectError("draft take ref_image_size must be match or max")
+                take_identity_overrides = take.get("identity_anchor_overrides")
+                if not isinstance(take_identity_overrides, dict) or any(
+                    not isinstance(subject, str) or not subject.strip()
+                    or policy not in IDENTITY_ANCHOR_OVERRIDES
+                    for subject, policy in take_identity_overrides.items()
+                ):
+                    raise ProjectError("draft take identity_anchor_overrides are invalid")
                 if take.get("recipe") is not None and not isinstance(take.get("recipe"), dict):
                     raise ProjectError("draft take recipe must be an object or null")
                 take_preview = take.get("preview")
@@ -2826,7 +3031,7 @@ class ProjectStore:
                         "prompt_hash", "requested_duration_seconds", "seed",
                         "card_reference",
                         "continuation_strategy", "continuation_source",
-                        "color_anchor_source_card_id", "recipe",
+                        "color_anchor_source_card_id", "identity_anchor_overrides", "recipe",
                         "generation_fingerprint", "reference_set", "context_frame_count",
                         "generated_frame_count", "actual_new_frame_count", "actual_duration_seconds",
                     ):
@@ -2967,6 +3172,56 @@ class ProjectStore:
                     r"[0-9a-f]{64}", publication["artifact_sha256"]
                 ):
                     raise ProjectError("publication history artifact_sha256 must be a lowercase SHA-256")
+        imported_anchors = manifest.get("imported_identity_anchors")
+        if not isinstance(imported_anchors, list):
+            raise ProjectError("imported_identity_anchors must be a list")
+        for anchor in imported_anchors:
+            anchor_id = anchor.get("anchor_id")
+            if not isinstance(anchor_id, str) or not anchor_id or anchor_id in anchor_ids:
+                raise ProjectError("anchor IDs must be non-empty and unique")
+            try:
+                uuid.UUID(anchor_id)
+            except (ValueError, AttributeError) as exc:
+                raise ProjectError("anchor_id must be a UUID") from exc
+            anchor_ids.add(anchor_id)
+            if anchor.get("role") != "identity":
+                raise ProjectError("imported anchors must use role=identity")
+            if any(anchor.get(field) is not None for field in (
+                "source_card_id", "source_card_artifact_number",
+                "source_preview_frame_index", "source_frame_index",
+                "source_preview_timestamp_seconds", "source_timestamp_seconds",
+            )):
+                raise ProjectError("imported identity anchors cannot reference a card or frame")
+            if anchor.get("selection_source") != "imported_image":
+                raise ProjectError("imported identity anchor has an invalid selection_source")
+            subject_id = anchor.get("subject_id")
+            if not isinstance(subject_id, str) or not subject_id.strip():
+                raise ProjectError("identity anchor subject_id is required")
+            if not isinstance(anchor.get("enabled"), bool):
+                raise ProjectError("anchor enabled must be boolean")
+            if not isinstance(anchor.get("mode"), str) or not anchor["mode"]:
+                raise ProjectError("anchor mode is required")
+            asset_path = anchor.get("asset_path")
+            if not isinstance(asset_path, str) or not asset_path:
+                raise ProjectError("anchor asset_path is required")
+            relative = self.relative_path(asset_path)
+            if relative != f"identity_imports/{anchor_id}.png":
+                raise ProjectError("imported identity asset path does not match its anchor ID")
+            if anchor.get("media_type") != "image/png":
+                raise ProjectError("imported identity anchors must be stored as image/png")
+            if not isinstance(anchor.get("asset_sha256"), str) or not re.fullmatch(
+                r"[0-9a-f]{64}", anchor["asset_sha256"]
+            ):
+                raise ProjectError("anchor asset_sha256 must be a lowercase SHA-256")
+            scope = anchor.get("identity_scope")
+            if scope not in IDENTITY_SCOPES:
+                raise ProjectError("identity anchor has an invalid identity_scope")
+            custom = anchor.get("custom_identity_instruction")
+            if scope == "custom" and (not isinstance(custom, str) or not custom.strip()):
+                raise ProjectError("custom identity scope requires a custom identity instruction")
+            if scope != "custom" and custom is not None:
+                raise ProjectError("non-custom identity scope cannot store a custom identity instruction")
+            anchors_by_id[anchor_id] = anchor
         if manifest.get("active_card_id") not in ids:
             raise ProjectError("active card does not exist")
         color_stats = manifest.get("color_baseline_stats")
@@ -3006,7 +3261,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         color_anchors: dict[str, str] = {}
@@ -3031,6 +3286,7 @@ class ProjectStore:
                 "direct_mmh3" if card.get("generation_parent_id") else "independent",
             )
             card.setdefault("derivatives", [])
+            card.setdefault("identity_anchor_overrides", {})
             card.setdefault("refine_enabled", False)
             card.setdefault("continuation_source_preference", "accepted_master")
             parent_id = card.get("generation_parent_id")
@@ -3074,6 +3330,9 @@ class ProjectStore:
             for take in card.get("draft_takes", []):
                 take.setdefault("card_reference", None)
                 take.setdefault("color_anchor_source_card_id", card["color_anchor_source_card_id"])
+                take.setdefault(
+                    "identity_anchor_overrides", deepcopy(card["identity_anchor_overrides"])
+                )
                 take_recipe = take.get("recipe") or {}
                 take_ref_image_size = (
                     take_recipe.get("ref_image_size") if isinstance(take_recipe, dict) else None
@@ -3091,6 +3350,7 @@ class ProjectStore:
             previous_id = card.get("id")
             color_anchors[card["id"]] = card["color_anchor_source_card_id"]
         manifest.setdefault("active_identity_anchors", {})
+        manifest.setdefault("imported_identity_anchors", [])
         manifest.setdefault("color_baseline_stats", {})
         manifest.setdefault("refine_cadence", "off")
         manifest.setdefault("continuation_treatment", "off")
@@ -3143,11 +3403,22 @@ class ProjectStore:
         anchor_id = manifest.get("active_identity_anchors", {}).get(subject_id)
         if not anchor_id:
             raise ProjectError(f"no identity anchor is selected for {subject_id}")
-        for card in manifest["cards"]:
-            for anchor in card.get("anchors", []):
-                if anchor.get("anchor_id") == anchor_id and anchor.get("role") == "identity":
-                    return anchor
+        for anchor in ProjectStore._identity_anchor_records(manifest):
+            if anchor.get("anchor_id") == anchor_id and anchor.get("role") == "identity":
+                return anchor
         raise ProjectError(f"active identity anchor is missing: {anchor_id}")
+
+    @staticmethod
+    def _identity_anchor_records(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            *manifest.get("imported_identity_anchors", []),
+            *(
+                anchor
+                for card in manifest.get("cards", [])
+                for anchor in card.get("anchors", [])
+                if anchor.get("role") == "identity"
+            ),
+        ]
 
     @staticmethod
     def _card(manifest: dict[str, Any], card_id: str | None) -> dict[str, Any]:

@@ -156,6 +156,9 @@ def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict
         "active_card": card,
         "card_count": len(manifest["cards"]),
         "active_identity_anchor": identity,
+        "active_identity_anchors_resolved": store.generation_identity_anchors(
+            manifest, card
+        ),
         "artifact_errors": store.validate_artifacts(manifest),
         "runtime": runtime_capabilities(),
     }
@@ -190,8 +193,14 @@ def _anchor_by_id(manifest: dict[str, Any], anchor_id: str | None) -> dict[str, 
     return next(
         (
             anchor
-            for card in manifest.get("cards", [])
-            for anchor in card.get("anchors", [])
+            for anchor in [
+                *manifest.get("imported_identity_anchors", []),
+                *[
+                    item
+                    for card in manifest.get("cards", [])
+                    for item in card.get("anchors", [])
+                ],
+            ]
             if anchor.get("anchor_id") == anchor_id
         ),
         None,
@@ -592,18 +601,27 @@ class LongCasterProject:
             store, current.get("card_reference"), references=references,
             width=width, height=height, ref_image_size=ref_image_size, video_vae=video_vae,
         )
-        identity_anchor = (
-            store.generation_identity_anchor(manifest) if use_identity_anchor else None
+        identity_anchors = (
+            store.generation_identity_anchors(manifest, current)
+            if use_identity_anchor else []
         )
-        identity_image = None
-        identity_picture_index = None
-        if identity_anchor is not None:
+        identity_references = []
+        if identity_anchors:
             if generation_mode != "ref2va" or reference_packet is None:
                 raise ProjectError("identity anchors currently require a REF2VA project and reference packet")
-            identity_image = load_anchor_image(store, identity_anchor)
-            identity_picture_index = 1 + sum(
+            first_identity_picture = 1 + sum(
                 1 for item in (references or {}).get("resources", []) if item.get("kind") == "image"
             ) + int(card_reference_image is not None)
+            for offset, identity_anchor in enumerate(identity_anchors):
+                identity_references.append({
+                    "anchor": identity_anchor,
+                    "image": load_anchor_image(store, identity_anchor),
+                    "picture_index": first_identity_picture + offset,
+                })
+        identity_anchor = identity_anchors[0] if identity_anchors else None
+        identity_picture_index = (
+            identity_references[0]["picture_index"] if identity_references else None
+        )
         parent_packet = None
         anchor = None
         anchor_image = None
@@ -661,14 +679,16 @@ class LongCasterProject:
         else:
             reason = "first_card_or_independent" if parent is None else "disabled"
             LOGGER.info("LongCaster state anchor active=False reason=%s prompt_reinforcement=False", reason)
-        if reinforce_state_prompt and (anchor is not None or identity_anchor is not None):
+        if reinforce_state_prompt and (anchor is not None or identity_references):
             effective_prompt, prompt_reinforced, prompt_sections = reinforce_prompt(
                 prompt,
                 current_state_active=anchor is not None,
-                identity_subject_id=identity_anchor.get("subject_id") if identity_anchor else None,
-                identity_picture_index=identity_picture_index,
-                identity_scope=identity_anchor.get("identity_scope", "face_only") if identity_anchor else "face_only",
-                custom_identity_instruction=identity_anchor.get("custom_identity_instruction") if identity_anchor else None,
+                identity_anchors=[{
+                    "subject_id": item["anchor"]["subject_id"],
+                    "picture_index": item["picture_index"],
+                    "identity_scope": item["anchor"].get("identity_scope", "face_only"),
+                    "custom_identity_instruction": item["anchor"].get("custom_identity_instruction"),
+                } for item in identity_references],
             )
         lora_activation_words = manifest.get("lora_activation_words", "")
         effective_prompt = inject_lora_activation_words(
@@ -678,32 +698,42 @@ class LongCasterProject:
             "LongCaster anchor prompt reinforcement injected=%s sections=%s",
             prompt_reinforced, ",".join(prompt_sections) or "none",
         )
-        identity_diagnostic = {
-            "active": identity_anchor is not None,
-            "anchor_id": identity_anchor.get("anchor_id") if identity_anchor else None,
-            "source_card_id": identity_anchor.get("source_card_id") if identity_anchor else None,
-            "source_preview_frame_index": identity_anchor.get("source_preview_frame_index") if identity_anchor else None,
-            "source_frame_index": identity_anchor.get("source_frame_index") if identity_anchor else None,
-            "source_timestamp_seconds": identity_anchor.get("source_timestamp_seconds") if identity_anchor else None,
-            "asset_path": identity_anchor.get("asset_path") if identity_anchor else None,
-            "subject_id": identity_anchor.get("subject_id") if identity_anchor else None,
-            "mechanism": IDENTITY_NATIVE_MECHANISM if identity_anchor else None,
+        identity_diagnostics = [{
+            "active": True,
+            "anchor_id": item["anchor"].get("anchor_id"),
+            "source_card_id": item["anchor"].get("source_card_id"),
+            "source_preview_frame_index": item["anchor"].get("source_preview_frame_index"),
+            "source_frame_index": item["anchor"].get("source_frame_index"),
+            "source_timestamp_seconds": item["anchor"].get("source_timestamp_seconds"),
+            "asset_path": item["anchor"].get("asset_path"),
+            "subject_id": item["anchor"].get("subject_id"),
+            "mechanism": IDENTITY_NATIVE_MECHANISM,
             "target_frame_index": None,
-            "reference_picture_index": identity_picture_index,
-            "identity_scope": identity_anchor.get("identity_scope", "face_only") if identity_anchor else None,
-            "prompt_reinforcement_injected": bool(prompt_reinforced and identity_anchor),
+            "reference_picture_index": item["picture_index"],
+            "identity_scope": item["anchor"].get("identity_scope", "face_only"),
+            "card_override": item["anchor"].get("card_override", "project"),
+            "prompt_reinforcement_injected": bool(prompt_reinforced),
+        } for item in identity_references]
+        identity_diagnostic = identity_diagnostics[0] if identity_diagnostics else {
+            "active": False, "anchor_id": None, "source_card_id": None,
+            "source_preview_frame_index": None, "source_frame_index": None,
+            "source_timestamp_seconds": None, "asset_path": None, "subject_id": None,
+            "mechanism": None, "target_frame_index": None,
+            "reference_picture_index": None, "identity_scope": None,
+            "card_override": None, "prompt_reinforcement_injected": False,
         }
         LOGGER.info(
-            "LongCaster identity anchor active=%s anchor_id=%s source_card_id=%s "
+            "LongCaster identity anchors active_count=%d subjects=%s first_anchor_id=%s source_card_id=%s "
             "preview_frame_index=%s source_frame_index=%s asset=%s subject_id=%s scope=%s "
             "mechanism=%s target_frame_index=none picture_index=%s both_anchors_active=%s "
             "prompt_reinforcement=%s",
-            identity_anchor is not None,
+            len(identity_anchors),
+            ",".join(item["subject_id"] for item in identity_anchors) or "none",
             identity_diagnostic["anchor_id"], identity_diagnostic["source_card_id"],
             identity_diagnostic["source_preview_frame_index"], identity_diagnostic["source_frame_index"],
             store.absolute_path(identity_anchor["asset_path"]) if identity_anchor else None,
             identity_diagnostic["subject_id"], identity_diagnostic["identity_scope"], identity_diagnostic["mechanism"],
-            identity_picture_index, bool(identity_anchor and anchor),
+            identity_picture_index, bool(identity_anchors and anchor),
             identity_diagnostic["prompt_reinforcement_injected"],
         )
         anchor_diagnostic = {
@@ -776,6 +806,7 @@ class LongCasterProject:
             "ref_image_size": ref_image_size,
             "state_anchor": anchor_diagnostic,
             "identity_anchor": identity_diagnostic,
+            "identity_anchors": identity_diagnostics,
             "runtime": runtime_capabilities(),
         }
         if card_reference is not None:
@@ -802,7 +833,10 @@ class LongCasterProject:
                 frames=duration.generated_frames,
                 reference_packet=reference_packet,
                 ref_image_size=ref_image_size,
-                additional_reference_images={"identity": identity_image} if identity_image is not None else None,
+                additional_reference_images={
+                    f"identity_{index}": item["image"]
+                    for index, item in enumerate(identity_references)
+                } or None,
                 card_reference=card_reference,
                 card_reference_image=card_reference_image,
             )
@@ -950,6 +984,7 @@ class LongCasterProject:
                 "continuation": continuation_plan,
                 "state_anchor": anchor_diagnostic,
                 "identity_anchor": identity_diagnostic,
+                "identity_anchors": identity_diagnostics,
                 "continuation_treatment": treatment_report,
                 "effective_prompt": effective_prompt,
                 "recipe_fingerprint": fingerprint,
@@ -1076,15 +1111,20 @@ class LongCasterProject:
                 ):
                     raise ProjectError("refine reference resources differ from the accepted card recipe")
 
-            identity_info = first_recipe.get("identity_anchor") or {}
-            identity_anchor = (
-                _anchor_by_id(manifest, identity_info.get("anchor_id"))
-                if identity_info.get("active")
-                else None
-            )
-            if identity_info.get("active") and identity_anchor is None:
-                raise ProjectError("accepted card identity anchor is no longer available")
-            identity_image = load_anchor_image(store, identity_anchor) if identity_anchor else None
+            identity_infos = first_recipe.get("identity_anchors")
+            if not isinstance(identity_infos, list):
+                legacy_identity = first_recipe.get("identity_anchor") or {}
+                identity_infos = [legacy_identity] if legacy_identity.get("active") else []
+            refine_identity_images: dict[str, Any] = {}
+            for index, identity_info in enumerate(identity_infos):
+                identity_anchor = _anchor_by_id(manifest, identity_info.get("anchor_id"))
+                if identity_anchor is None:
+                    raise ProjectError(
+                        f"accepted card identity anchor is no longer available: {identity_info.get('subject_id')}"
+                    )
+                refine_identity_images[f"identity_{index}"] = load_anchor_image(
+                    store, identity_anchor
+                )
 
             effective_prompt = str(first_recipe.get("effective_prompt") or card.get("prompt", ""))
             from .longcaster.card_reference import prepare_refine_reference
@@ -1106,9 +1146,7 @@ class LongCasterProject:
                 ref_image_size=str(first_recipe.get("ref_image_size") or ref_image_size),
                 card_reference=refine_card_reference,
                 card_reference_image=refine_card_image,
-                additional_reference_images=(
-                    {"identity": identity_image} if identity_image is not None else None
-                ),
+                additional_reference_images=refine_identity_images or None,
             )
 
             state_info = first_recipe.get("state_anchor") or {}

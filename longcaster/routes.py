@@ -9,7 +9,7 @@ from aiohttp import web
 from server import PromptServer
 
 from .duplicate import duplicate_project
-from .project import ProjectError, ProjectStore
+from .project import ProjectError, ProjectStore, sha256_file
 from .provenance import provenance_for_display
 
 
@@ -170,6 +170,8 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
                 "references": take.get("reference_set"),
                 "card_reference": (take.get("recipe") or {}).get("card_reference"),
                 "identity_anchor": (take.get("recipe") or {}).get("identity_anchor"),
+                "identity_anchors": (take.get("recipe") or {}).get("identity_anchors", []),
+                "identity_anchor_overrides": take.get("identity_anchor_overrides", {}),
             },
         })
     return {
@@ -197,6 +199,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "continuation_strategy": card.get("continuation_strategy"),
         "continuation_source": card.get("continuation_source"),
         "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
+        "identity_anchor_overrides": card.get("identity_anchor_overrides", {}),
         "continuation_source_preference": card.get(
             "continuation_source_preference", "accepted_master"
         ),
@@ -212,6 +215,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "card_reference": card.get("card_reference"),
         "card_reference_resolved": (card.get("recipe") or {}).get("card_reference"),
         "identity_anchor_resolved": (card.get("recipe") or {}).get("identity_anchor"),
+        "identity_anchors_resolved": (card.get("recipe") or {}).get("identity_anchors", []),
         "accepted_publication_id": card.get("accepted_publication_id"),
         "has_publication_history": bool(card.get("publication_history")),
         "draft_inputs_dirty": card.get("draft_inputs_dirty", False),
@@ -240,20 +244,28 @@ def _identity_anchors(store: ProjectStore, manifest: dict[str, Any]) -> list[dic
     for subject_id, anchor_id in bindings.items():
         active_by_anchor.setdefault(anchor_id, []).append(subject_id)
     identities = []
-    for card in manifest["cards"]:
-        for anchor in card.get("anchors", []):
-            if anchor.get("role") != "identity":
-                continue
-            identities.append({
-                "anchor_id": anchor["anchor_id"],
-                "subject_id": anchor.get("subject_id"),
+    sources = [
+        (anchor, None)
+        for anchor in manifest.get("imported_identity_anchors", [])
+    ] + [
+        (anchor, card)
+        for card in manifest["cards"]
+        for anchor in card.get("anchors", [])
+    ]
+    for anchor, card in sources:
+        if anchor.get("role") != "identity":
+            continue
+        identities.append({
+            "anchor_id": anchor["anchor_id"],
+            "subject_id": anchor.get("subject_id"),
             "label": anchor.get("label") or "Identity checkpoint",
             "enabled": anchor.get("enabled", True),
             "identity_scope": anchor.get("identity_scope", "face_only"),
             "custom_identity_instruction": anchor.get("custom_identity_instruction"),
-                "source_card_id": card["id"],
-                "source_card_number": card["timeline_index"] + 1,
-                "source_artifact_number": card["artifact_number"],
+            "selection_source": anchor.get("selection_source", "card_frame"),
+            "source_card_id": card["id"] if card else None,
+            "source_card_number": card["timeline_index"] + 1 if card else None,
+            "source_artifact_number": card["artifact_number"] if card else None,
             "source_preview_frame_index": anchor.get("source_preview_frame_index"),
             "source_timestamp_seconds": anchor.get("source_preview_timestamp_seconds"),
             "active_for": active_by_anchor.get(anchor["anchor_id"], []),
@@ -493,6 +505,7 @@ async def update_cards_card(request: web.Request) -> web.Response:
             card_reference_settings=payload.get("card_reference_settings"),
             continuation_strategy=payload.get("continuation_strategy"),
             color_anchor_source_card_id=payload.get("color_anchor_source_card_id"),
+            identity_anchor_overrides=payload.get("identity_anchor_overrides"),
             refine_enabled=payload.get("refine_enabled"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
             import_prompt=payload.get("import_prompt"),
@@ -567,6 +580,38 @@ async def get_cards_preview(request: web.Request) -> web.StreamResponse:
         return _error_response(exc, not_found=True)
 
 
+async def export_project_prompts(request: web.Request) -> web.StreamResponse:
+    try:
+        store = ProjectStore(_projects_root(), request.query.get("project", ""))
+        manifest = store.load()
+        prompts: list[str] = []
+        for card in manifest["cards"]:
+            selected_take_id = card.get("selected_draft_take_id")
+            selected_take = next(
+                (
+                    take for take in card.get("draft_takes", [])
+                    if take.get("id") == selected_take_id
+                ),
+                None,
+            )
+            source = selected_take if selected_take is not None else card
+            prompt = source.get("assembled_prompt", source.get("prompt", ""))
+            prompts.append(str(prompt).rstrip("\r\n"))
+        merged = "\n\n---\n\n".join(prompts) + "\n"
+        return web.Response(
+            text=merged,
+            content_type="text/plain",
+            charset="utf-8",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="{manifest["project_name"]}_prompts.txt"'
+                )
+            },
+        )
+    except (OSError, ValueError, ProjectError) as exc:
+        return _error_response(exc, not_found=True)
+
+
 async def get_anchor_asset(request: web.Request) -> web.StreamResponse:
     try:
         store = ProjectStore(_projects_root(), request.query.get("project", ""))
@@ -575,8 +620,14 @@ async def get_anchor_asset(request: web.Request) -> web.StreamResponse:
         anchor = next(
             (
                 item
-                for card in manifest["cards"]
-                for item in card.get("anchors", [])
+                for item in [
+                    *manifest.get("imported_identity_anchors", []),
+                    *[
+                        anchor
+                        for card in manifest["cards"]
+                        for anchor in card.get("anchors", [])
+                    ],
+                ]
                 if item.get("anchor_id") == anchor_id
             ),
             None,
@@ -586,7 +637,18 @@ async def get_anchor_asset(request: web.Request) -> web.StreamResponse:
         path = store.absolute_path(anchor["asset_path"])
         if not path.is_file():
             raise ProjectError("anchor image is missing")
-        return web.FileResponse(path)
+        if sha256_file(path) != anchor.get("asset_sha256"):
+            raise ProjectError("anchor image hash does not match its project record")
+        response = web.FileResponse(path)
+        if request.query.get("download") == "1":
+            subject = "".join(
+                character if character.isascii() and (character.isalnum() or character in "-_") else "_"
+                for character in str(anchor.get("subject_id") or "identity")
+            ).strip("_") or "identity"
+            response.headers["Content-Disposition"] = (
+                f'attachment; filename="{subject}_{anchor["anchor_id"]}.png"'
+            )
+        return response
     except (OSError, ValueError, ProjectError) as exc:
         return _error_response(exc, not_found=True)
 
@@ -604,7 +666,7 @@ async def manage_draft_take(request: web.Request) -> web.Response:
             manifest = store.select_draft_take(
                 take_id=str(payload.get("take_id", "")), **common
             )
-            message = "Draft take selected."
+            message = "Draft take selected; its prompt, seed, and generation settings were restored."
         elif action == "delete":
             manifest = store.delete_draft_take(
                 take_id=str(payload.get("take_id", "")), **common
@@ -654,6 +716,51 @@ async def manage_identity_anchor(request: web.Request) -> web.Response:
             raise ProjectError(f"unsupported identity action: {action!r}")
         return web.json_response(_cards_state(store, manifest, message))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def import_identity_anchor(request: web.Request) -> web.Response:
+    try:
+        reader = await request.multipart()
+        allowed = {
+            "project", "revision", "subject_id", "label", "identity_scope",
+            "custom_identity_instruction", "image",
+        }
+        fields: dict[str, bytes] = {}
+        total = 0
+        async for part in reader:
+            if part.name not in allowed or part.name in fields:
+                raise ProjectError("invalid identity image upload fields")
+            value = bytearray()
+            while True:
+                chunk = await part.read_chunk()
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > 32 * 1024 * 1024:
+                    raise ProjectError("identity image upload exceeds 32 MiB")
+                value.extend(chunk)
+            fields[part.name] = bytes(value)
+        image_bytes = fields.pop("image", None)
+        if not image_bytes:
+            raise ProjectError("identity upload requires an image")
+        text_fields = {key: value.decode("utf-8") for key, value in fields.items()}
+        store = ProjectStore(_projects_root(), text_fields.get("project", ""))
+        subject_id = text_fields.get("subject_id", "<Subject 1>").strip()
+        manifest = store.import_identity_anchor(
+            expected_revision=int(text_fields.get("revision", -1)),
+            image_bytes=image_bytes,
+            subject_id=subject_id,
+            label=text_fields.get("label", ""),
+            identity_scope=text_fields.get("identity_scope", "face_only"),
+            custom_identity_instruction=text_fields.get(
+                "custom_identity_instruction", ""
+            ),
+        )
+        return web.json_response(
+            _cards_state(store, manifest, f"Imported identity checkpoint for {subject_id}.")
+        )
+    except (OSError, UnicodeDecodeError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
 
@@ -766,8 +873,10 @@ def register_routes() -> bool:
     instance.routes.post("/longcaster/cards/copy")(copy_cards_sections)
     instance.routes.post("/longcaster/cards/continuation-source")(set_cards_continuation_source)
     instance.routes.get("/longcaster/cards/preview")(get_cards_preview)
+    instance.routes.get("/longcaster/cards/prompts/export")(export_project_prompts)
     instance.routes.post("/longcaster/cards/take")(manage_draft_take)
     instance.routes.get("/longcaster/cards/anchor")(get_anchor_asset)
     instance.routes.post("/longcaster/cards/identity")(manage_identity_anchor)
+    instance.routes.post("/longcaster/cards/identity/import")(import_identity_anchor)
     _REGISTERED = True
     return True

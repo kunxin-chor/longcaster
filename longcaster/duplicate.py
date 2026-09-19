@@ -159,7 +159,17 @@ def duplicate_project(
                     else:
                         card["continuation_source"] = None
                 duplicated["active_card_id"] = duplicated["cards"][0]["id"]
-                duplicated["active_identity_anchors"] = {}
+                imported_ids = {
+                    item.get("anchor_id")
+                    for item in duplicated.get("imported_identity_anchors", [])
+                }
+                duplicated["active_identity_anchors"] = {
+                    subject_id: anchor_id
+                    for subject_id, anchor_id in duplicated.get(
+                        "active_identity_anchors", {}
+                    ).items()
+                    if anchor_id in imported_ids
+                }
                 duplicated["color_baseline_stats"] = {}
                 duplicated["last_operation"]["kind"] = "duplicate_and_invalidate_project"
                 for directory_name in (

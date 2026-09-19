@@ -20,9 +20,9 @@ For every generation path, the effective native image order is deterministic:
 
 1. Images from the connected project MMH3 reference packet.
 2. Enabled card-local image references.
-3. The LongCaster identity-anchor image, when active.
+3. Enabled LongCaster identity-anchor images, ordered by subject ID.
 
-Video and audio references retain native MiniMax ordering after those images. The card reference is exposed to MiniMax as an ordinary `<Picture N>`; its index is calculated from the effective reference list and is never represented by an alias or prompt rewrite. The native image-count limit includes project images, card images, and the identity anchor.
+Video and audio references retain native MiniMax ordering after those images. Card and identity references are exposed to MiniMax as ordinary `<Picture N>` images; their indexes are calculated from the effective reference list and are never represented by aliases or prompt rewrites. The native image-count limit includes project images, the card image, and every enabled subject identity.
 
 Latent softening, when enabled, changes only the card picture's native VAE reference latent. MiniMax's tokenizer/Qwen path continues to receive the original resized RGB image. A clean encoded latent `z` is reused and the effective latent is `strength * z`, where `1.0` is native Ref2VA behavior and `0.0` is a zero latent. The implementation replaces only the targeted cloned `minimax_refs` block and does not mutate shared conditioning, alter other references, or add a sampler pass.
 

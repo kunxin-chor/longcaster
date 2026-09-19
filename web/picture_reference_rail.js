@@ -1,4 +1,4 @@
-export function assemblePictureReferences({globalPictures = [], cardReference = null, identityReference = null}) {
+export function assemblePictureReferences({globalPictures = [], cardReference = null, identityReference = null, identityReferences = null}) {
     let picture = 0;
     const active = [];
     const inactive = [];
@@ -14,9 +14,11 @@ export function assemblePictureReferences({globalPictures = [], cardReference = 
             inactive.push({...cardReference, source: "card", pictureIndex: null});
         }
     }
-    if (identityReference?.enabled) {
+    const identities = identityReferences || (identityReference ? [identityReference] : []);
+    for (const identity of identities) {
+        if (!identity?.enabled) continue;
         picture += 1;
-        active.push({...identityReference, source: "identity", pictureIndex: picture});
+        active.push({...identity, source: "identity", pictureIndex: picture});
     }
     return {active, inactive, count: picture};
 }

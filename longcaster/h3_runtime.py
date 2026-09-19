@@ -79,7 +79,7 @@ def build_conditioning(
     for name, image in (additional_reference_images or {}).items():
         images[f"ref_image_{len(images)}_{name}"] = image
     if len(images) > 9:
-        raise ValueError("MiniMax H3 supports at most 9 image references including card references and the identity anchor")
+        raise ValueError("MiniMax H3 supports at most 9 image references including card references and identity anchors")
     output = MiniMaxH3ReferenceToVideo.execute(
         clip=clip, vae=card_vae if card_vae is not None else video_vae,
         audio_vae=audio_vae, prompt=prompt, width=int(width), height=int(height),

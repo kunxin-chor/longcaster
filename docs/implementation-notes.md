@@ -16,7 +16,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 
 ## Implemented
 
-- Schema 17 direct-continuation treatment policy: backward-compatible Off, Drift-Control AV with synchronized schedule-matched sampler/H3 video masks, and optional Color-Stable Drift AV with a selectable earlier accepted-card baseline, persisted hash/VAE/version-bound baseline statistics, video-only VAE delta correction, immutable-source hash verification, frozen recipes, and a reusable per-stage binding boundary for future SelfLift work. Stage 3A refine is unchanged.
+- Schema 19 project state: schema-18 multi-subject identity behavior plus project-owned arbitrary-image identity imports that do not depend on card render lineage.
 
 - Patch-agnostic upstream `MODEL` input and Comfy Basic Guider sampling.
 - Optional external `SIGMAS`, with finite/decreasing/terminal-zero validation and direct forwarding to the advanced sampler.
@@ -89,6 +89,6 @@ Automated checks do not measure whether the model obeys the visual state strongl
 - The final Comfy `MODEL` object still exposes no universal immutable checkpoint identity. LongCaster therefore retains both its safe runtime patch/model summary and the submitted upstream graph provenance; the latter records loader filenames and settings but does not hash model assets or prove the internal behavior of arbitrary custom nodes.
 - PDD-ACC compatibility with the REF2VA/FL2VA hybrid weights is not established by upstream PDD source or by the non-GPU tests.
 - The native H3 guide exposes no strength control. Stage 2A records its mode but cannot tune guide strength independently.
-- Native H3 image references expose no independent identity strength. Stage 2B records `strength=null` and uses one active identity checkpoint for `<Subject 1>` in the MVP UI. Identity scope is a prompt instruction rather than an attention mask, crop, or strength control, so the full reference image can still leak excluded attributes.
+- Native H3 image references expose no independent identity strength. Stage 2B records `strength=null`; each subject can select one checkpoint, and enabled subjects are appended in deterministic order with card-local override policy. Identity scope is a prompt instruction rather than an attention mask, crop, or strength control, so full reference images can still leak excluded attributes or visually blend across subjects.
 - A single visible frame cannot preserve state that is occluded or outside the frame, and a strong older Ref2VA appearance can still win. The prompt reinforcement reduces that ambiguity but does not guarantee compliance.
 - `source_timestamp_seconds` is local to the source card archive and includes any continuation prefix stored in that card.

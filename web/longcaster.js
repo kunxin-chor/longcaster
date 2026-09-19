@@ -603,9 +603,9 @@ function createCardsWorkspace(node) {
         .lc-cards-main{min-height:0;display:grid;grid-template-columns:260px minmax(620px,1fr) 420px}.lc-cards-sidebar,.lc-cards-preview{min-height:0;overflow:auto;background:#0a1824;padding:10px;border-right:1px solid #20394b}.lc-cards-preview{border-right:0;border-left:1px solid #20394b}
         .lc-cards-list{display:grid;gap:5px}.lc-card-item{display:grid!important;grid-template-columns:34px 1fr;gap:7px;text-align:left;padding:9px!important}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
         .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}.lc-picture-rail{min-width:0;height:430px;overflow:auto;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:8px;box-sizing:border-box}.lc-picture-rail-heading{display:grid;gap:2px;margin-bottom:8px}.lc-picture-rail-heading small{color:#91aabd}.lc-picture-rail-list{display:grid;gap:8px}.lc-picture-tile{display:grid;gap:3px;padding:7px;background:#0d2130;border:1px solid #29465b;border-radius:6px;overflow:hidden}.lc-picture-tile img,.lc-picture-placeholder{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;background:#02070a}.lc-picture-placeholder{display:grid;place-items:center;color:#718898;font-weight:700}.lc-picture-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lc-picture-tile small{color:#91aabd;line-height:1.25}.lc-picture-tile.inactive{opacity:.55;border-style:dashed}.lc-picture-toggle.active{background:#0968bd!important;border-color:#1684e6!important}
-        .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
+        .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-card-identity-overrides{display:grid;gap:5px}.lc-card-identity-override{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.lc-card-identity-override span{overflow:hidden;text-overflow:ellipsis}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
         .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-project{grid-template-columns:1fr}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
-        .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}
+        .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}.lc-identity-import{grid-column:1/-1;box-sizing:border-box;min-height:76px;border:2px dashed #31546b;border-radius:7px;display:grid;place-items:center;padding:12px;color:#9fc0d4;background:#081520;cursor:pointer;text-align:center}.lc-identity-import:hover,.lc-identity-import.dragging{border-color:#1684e6;background:#0c2537;color:#d8edfa}.lc-identity-import.disabled{opacity:.5;cursor:not-allowed}.lc-identity-import input{display:none}.lc-identity-import small{display:block;margin-top:4px;color:#7897aa}
         .lc-project-resolution{display:grid;gap:9px}.lc-project-resolution-fields{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,.6fr) minmax(190px,1fr);gap:8px}.lc-project-resolution-fields label{display:grid;gap:4px;color:#a9bdca}.lc-project-resolution-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.lc-project-resolution-lock{color:#f5bd4d}
         .lc-draft-takes{display:grid;gap:6px}.lc-draft-take{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center;background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px}.lc-draft-take.selected{background:#103b2d;border-color:#35b779}.lc-draft-take.viewed{box-shadow:inset 3px 0 #1684e6}.lc-draft-take-meta{display:grid;gap:2px;min-width:0}.lc-draft-take-meta small{color:#91aabd}.lc-draft-take-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.lc-draft-take-actions button{padding:5px 7px}.lc-draft-takes-head{display:flex;align-items:center;gap:8px}.lc-draft-takes-head h3{margin-right:auto}
         .lc-prompt-diff-details{margin-top:8px;border:1px solid #29465b;border-radius:5px;background:#07131d}.lc-prompt-diff-details summary{cursor:pointer;padding:8px;color:#b9cbd7}.lc-prompt-diff{max-height:420px;overflow:auto;border-top:1px solid #223f53;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-prompt-diff-row{display:grid;grid-template-columns:42px 42px 18px minmax(0,1fr);white-space:pre-wrap;word-break:break-word;padding:1px 6px}.lc-prompt-diff-row .line-number{color:#607b8d;text-align:right;padding-right:7px;user-select:none}.lc-prompt-diff-row.add{background:#103b2d;color:#c8f2dc}.lc-prompt-diff-row.delete{background:#451f27;color:#ffd0d4}.lc-prompt-diff-empty{padding:9px;color:#91aabd}
@@ -732,6 +732,12 @@ function createCardsWorkspace(node) {
     const colorBaseline = document.createElement("select");
     colorBaselineField.append(cardsElement("label", "", "Color-Stable baseline card"), colorBaseline);
     colorBaselineField.append(cardsElement("div", "lc-cards-help", "Choose any earlier accepted card as this direct continuation's scene-color baseline. The choice is inherited by newly appended cards until you change it."));
+    const identityOverridesField = cardsElement("div", "lc-cards-field");
+    const identityOverrides = cardsElement("div", "lc-card-identity-overrides");
+    identityOverridesField.append(
+        cardsElement("label", "", "Identity anchors for this card"), identityOverrides,
+        cardsElement("div", "lc-cards-help", "Project follows each subject's project-level Enabled/Disabled state. Enabled and Disabled override it only for this card."),
+    );
     const refImageSizeField = cardsElement("div", "lc-cards-field");
     const refImageSize = document.createElement("select");
     for (const [value, label] of [["match", "Match generation size"], ["max", "Maximum reference size"]]) {
@@ -758,7 +764,7 @@ function createCardsWorkspace(node) {
     const refineEnabled = document.createElement("input"); refineEnabled.type = "checkbox";
     const refineEnabledLabel = cardsElement("label", "lc-refine-check"); refineEnabledLabel.append(refineEnabled, document.createTextNode("Create refined source after accepting this card"));
     refineEnabledField.append(refineEnabledLabel, cardsElement("div", "lc-cards-help", "Used only in Manual mode. The setting becomes read-only after acceptance."));
-    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, refImageSizeField, refineCadenceField, refineEnabledField);
+    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, identityOverridesField, refImageSizeField, refineCadenceField, refineEnabledField);
     const cardReferenceControls = createCardReferenceControls({
         assetURL: path => api.apiURL(path),
         onSettings(settings) {
@@ -842,6 +848,10 @@ function createCardsWorkspace(node) {
     for (const value of ["face_only", "face_clothing", "face_body", "everything", "custom"]) { const option = document.createElement("option"); option.value = value; option.textContent = value.replaceAll("_", " "); identityScope.append(option); }
     const identityCustom = document.createElement("textarea"); identityCustom.className = "wide"; identityCustom.placeholder = "For custom scope, describe exactly what this image may contribute."; identityCustom.hidden = true;
     const createIdentity = cardsElement("button", "wide", "Use selected card frame as identity");
+    const identityImportInput = document.createElement("input"); identityImportInput.type = "file"; identityImportInput.accept = "image/*";
+    const identityImport = cardsElement("div", "lc-identity-import", "Drop an identity image here or click to browse");
+    identityImport.tabIndex = 0;
+    identityImport.append(cardsElement("small", "", "The image is copied into this project and selected for the subject above."), identityImportInput);
     preview.append(video, buildPreview, takesHeading, draftTakes, promptDiffDetails, generationSetupDetails, info, cardsElement("h3", "", "Continuation Refine"), refineStatus, refineControls);
     main.append(sidebar, editor, preview);
 
@@ -866,7 +876,7 @@ function createCardsWorkspace(node) {
         resolutionActions,
     );
     const identityPanel = cardsElement("section", "lc-project-panel");
-    identityPanel.append(cardsElement("h2", "", "Identity Anchors"), cardsElement("div", "lc-cards-help", "Inspect, activate, disable, or clear saved identities. Select an accepted source card and scrub its preview to create another checkpoint."));
+    identityPanel.append(cardsElement("h2", "", "Identity Anchors"), cardsElement("div", "lc-cards-help", "Inspect, activate, disable, or clear saved identities. Create one from an accepted card frame or import an arbitrary image."));
     const identitySource = cardsElement("div", "lc-project-identity-source");
     const identitySourceSelect = document.createElement("select");
     const buildIdentityPreview = cardsElement("button", "", "Generate Missing Preview");
@@ -875,9 +885,11 @@ function createCardsWorkspace(node) {
     identityCustom.hidden = false;
     const customScopeField = field("Custom scope instruction", identityCustom); customScopeField.className = "wide"; customScopeField.hidden = true;
     createIdentity.className = "wide";
+    const identityFrameField = field("Frame", identityFrame);
     identityForm.append(
-        field("Subject", identitySubject), field("Frame", identityFrame), field("Label", identityLabel),
+        field("Subject", identitySubject), identityFrameField, field("Label", identityLabel),
         field("Scope", identityScope), customScopeField, createIdentity,
+        identityImport,
     );
     identitySource.append(field("Accepted source card", identitySourceSelect), buildIdentityPreview, identityVideo, identityForm);
     identityPanel.append(identityHeading, identities, identitySource);
@@ -894,7 +906,25 @@ function createCardsWorkspace(node) {
         loraWords,
         loraActions,
     );
-    projectView.append(resolutionPanel, loraPanel, identityPanel, referencePanel);
+    const promptExportPanel = cardsElement("section", "lc-project-panel");
+    const exportProjectPrompts = cardsElement("button", "lc-cards-primary", "Export Project Prompts");
+    promptExportPanel.append(
+        cardsElement("h2", "", "Prompt Export"),
+        cardsElement("div", "lc-cards-help", "Download every card's selected prompt in timeline order. Prompts are separated by --- lines."),
+        exportProjectPrompts,
+    );
+    const projectPreviewPanel = cardsElement("section", "lc-project-panel");
+    const playProjectPreview = cardsElement("button", "lc-cards-primary", "Play Project Preview");
+    const projectPreviewStatus = cardsElement("div", "lc-cards-help", "Plays each selected card preview in timeline order without creating a stitched file.");
+    const projectPreviewVideo = cardsElement("video", "lc-project-identity-video");
+    projectPreviewVideo.controls = true; projectPreviewVideo.preload = "metadata"; projectPreviewVideo.hidden = true;
+    projectPreviewPanel.append(
+        cardsElement("h2", "", "Project Preview"),
+        projectPreviewStatus,
+        playProjectPreview,
+        projectPreviewVideo,
+    );
+    projectView.append(resolutionPanel, loraPanel, identityPanel, referencePanel, promptExportPanel, projectPreviewPanel);
     const footer = cardsElement("div", "lc-cards-footer");
     const message = cardsElement("span", "", "Loading…");
     const saveState = cardsElement("span", "lc-cards-save");
@@ -912,7 +942,7 @@ function createCardsWorkspace(node) {
         loraDirty: false,
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
-        pictureRailOpen, batch: null,
+        pictureRailOpen, batch: null, projectPreviewClips: [], projectPreviewIndex: -1,
     };
     node.longcasterCardsWorkspace = workspace;
     node.graph.longcasterProjectAuthority = node;
@@ -1172,12 +1202,14 @@ function createCardsWorkspace(node) {
 
     function updateState(state, keepSelection = true) {
         const previousCard = selectedCard();
+        const projectChanged = Boolean(workspace.state?.project && workspace.state.project !== state.project);
         const followedSelectedTake = !workspace.viewedTakeId
             || workspace.viewedTakeId === previousCard?.selected_draft_take_id;
         if (workspace.state?.project && workspace.state.project !== state.project) {
             workspace.loraDirty = false;
         }
         workspace.state = state;
+        if (projectChanged) resetProjectPreview();
         workspace.requestedProject = state.project;
         syncProjectNode(node, state);
         projectPath.textContent = state.project_folder || "";
@@ -1208,6 +1240,12 @@ function createCardsWorkspace(node) {
             || loraWords.value.trim() === (state.lora_activation_words || "");
         duplicateProject.disabled = batchActive || Boolean(state.pending_operation);
         duplicateAndInvalidate.disabled = batchActive || Boolean(state.pending_operation);
+        exportProjectPrompts.disabled = batchActive || Boolean(state.pending_operation);
+        const projectPreviewCount = selectedProjectPreviewClips().length;
+        playProjectPreview.disabled = batchActive || Boolean(state.pending_operation) || !projectPreviewCount;
+        playProjectPreview.title = projectPreviewCount
+            ? `Play ${projectPreviewCount} selected preview clip${projectPreviewCount === 1 ? "" : "s"}.`
+            : "No selected card previews are available.";
         if (document.activeElement !== projectAspect && document.activeElement !== projectMegapixels) {
             projectAspect.value = nearestProjectAspect(state.width, state.height);
             projectMegapixels.value = String(Math.round(state.width * state.height / (1024 * 1024) * 1000) / 1000);
@@ -1305,6 +1343,30 @@ function createCardsWorkspace(node) {
             : card.continuation_strategy !== "direct_mmh3"
                 ? "Color-Stable baselines apply only to direct MMH3 continuation."
                 : "Select the accepted card whose color statistics should anchor this scene.";
+        identityOverrides.replaceChildren();
+        const boundSubjects = Object.keys(state.active_identity_anchors || {}).sort((left, right) => left.localeCompare(right));
+        if (!boundSubjects.length) {
+            identityOverrides.append(cardsElement("div", "lc-cards-help", "No project identity checkpoint is selected for any subject."));
+        }
+        for (const subject of boundSubjects) {
+            const row = cardsElement("div", "lc-card-identity-override");
+            const label = cardsElement("span", "", subject);
+            const select = document.createElement("select");
+            const projectAnchorId = state.active_identity_anchors[subject];
+            const projectAnchor = state.identity_anchors?.find(item => item.anchor_id === projectAnchorId);
+            const projectLabel = `Project (${projectAnchor?.enabled === false ? "Disabled" : "Enabled"})`;
+            for (const [value, text] of [["project", projectLabel], ["enabled", "Enabled"], ["disabled", "Disabled"]]) {
+                const option = document.createElement("option"); option.value = value; option.textContent = text; select.append(option);
+            }
+            select.value = card.identity_anchor_overrides?.[subject] || "project";
+            select.disabled = !isEditable || Boolean(state.pending_operation) || batchActive;
+            select.onchange = () => {
+                card.identity_anchor_overrides = {...(card.identity_anchor_overrides || {}), [subject]: select.value};
+                markDirty();
+                renderPictureRail(card, viewedTake());
+            };
+            row.append(label, select); identityOverrides.append(row);
+        }
         const refineMode = state.refine_cadence || "off";
         setRefineRadios(refineCadence, refineMode);
         setRefineRadios(subjectRefineCadence, refineMode);
@@ -1394,7 +1456,7 @@ function createCardsWorkspace(node) {
             viewTake.onclick = () => { workspace.viewedTakeId = item.id; render(); };
             const selectTake = cardsElement("button", item.selected ? "" : "lc-cards-accept", item.selected ? "Selected" : "Select");
             selectTake.disabled = item.selected || card.status !== "DRAFT" || card.id !== state.active_card_id || Boolean(state.pending_operation);
-            selectTake.title = card.status !== "DRAFT" ? "Unpublish this card before selecting another take." : "Restore this take's exact inputs and use it for acceptance.";
+            selectTake.title = card.status !== "DRAFT" ? "Unpublish this card before selecting another take." : "Restore this take's prompt, seed, and exact generation settings, then use it for acceptance.";
             selectTake.onclick = () => manageDraftTake("select", card, item);
             const deleteTake = cardsElement("button", "lc-identity-delete", "Delete");
             deleteTake.disabled = item.selected || Boolean(state.pending_operation);
@@ -1451,7 +1513,7 @@ function createCardsWorkspace(node) {
     function renderIdentities() {
         identities.replaceChildren();
         const items = workspace.state.identity_anchors || [];
-        if (!items.length) identities.append(cardsElement("div", "lc-cards-help", "No saved identity checkpoints. Choose an accepted card and frame below to create one."));
+        if (!items.length) identities.append(cardsElement("div", "lc-cards-help", "No saved identity checkpoints. Choose an accepted card frame or import an image below."));
         for (const item of items) {
             const selected = Boolean(item.active_for?.length);
             const inUse = selected && item.enabled;
@@ -1465,7 +1527,10 @@ function createCardsWorkspace(node) {
             body.append(cardsElement("div", "", item.label));
             body.append(cardsElement("small", "", `${binding} · ${item.enabled ? "ENABLED" : "DISABLED"}`));
             const sourceTime = item.source_timestamp_seconds == null ? "" : ` at ${Number(item.source_timestamp_seconds).toFixed(2)}s`;
-            body.append(cardsElement("small", "", `${item.subject_id} · Card ${item.source_card_number}, frame ${item.source_preview_frame_index ?? "?"}${sourceTime} · ${item.identity_scope.replaceAll("_", " ")} · ${shortId(item.anchor_id)}`));
+            const sourceDescription = item.selection_source === "imported_image"
+                ? "Imported image"
+                : `Card ${item.source_card_number}, frame ${item.source_preview_frame_index ?? "?"}${sourceTime}`;
+            body.append(cardsElement("small", "", `${item.subject_id} · ${sourceDescription} · ${item.identity_scope.replaceAll("_", " ")} · ${shortId(item.anchor_id)}`));
             if (item.custom_identity_instruction) body.append(cardsElement("small", "", item.custom_identity_instruction));
             const controls = cardsElement("div", "lc-identity-controls");
             const use = cardsElement("button", "", selected ? (item.enabled ? "Disable" : "Enable") : "Use");
@@ -1478,6 +1543,15 @@ function createCardsWorkspace(node) {
                 clear.onclick = () => manageIdentity("clear", item);
                 controls.append(clear);
             }
+            const exportImage = cardsElement("button", "", "Export PNG");
+            exportImage.disabled = !item.asset_available;
+            exportImage.onclick = () => {
+                const link = document.createElement("a");
+                link.href = api.apiURL(`/longcaster/cards/anchor?project=${encodeURIComponent(workspace.state.project)}&anchor=${encodeURIComponent(item.anchor_id)}&download=1`);
+                link.download = "";
+                document.body.append(link); link.click(); link.remove();
+            };
+            controls.append(exportImage);
             const remove = cardsElement("button", "lc-identity-delete", "Delete");
             remove.disabled = Boolean(workspace.state.pending_operation);
             remove.onclick = () => {
@@ -1504,9 +1578,14 @@ function createCardsWorkspace(node) {
         }
         identitySourceSelect.value = source?.id || "";
         identitySourceSelect.disabled = !source;
-        identityForm.hidden = !source;
+        identityForm.hidden = false;
+        identityFrameField.hidden = !source;
+        createIdentity.hidden = !source;
         buildIdentityPreview.hidden = !source || source.preview_available;
         buildIdentityPreview.disabled = Boolean(workspace.state.pending_operation);
+        const importDisabled = Boolean(workspace.state.pending_operation) || workspace.state.generation_mode !== "ref2va";
+        identityImport.classList.toggle("disabled", importDisabled);
+        identityImportInput.disabled = importDisabled;
         const visibleFrames = Number(source?.actual_new_frame_count ?? Math.round(Number(source?.actual_duration_seconds || 0) * 24));
         identityFrame.max = String(Math.max(0, visibleFrames - 1));
         if (source?.preview_available) {
@@ -1651,20 +1730,32 @@ function createCardsWorkspace(node) {
                 project: workspace.state.project, card_id: card.id, reference_id: selectedCardReference.id,
             })}`),
         } : null;
-        const frozenIdentity = useFrozen
-            ? (take?.settings?.identity_anchor || card.identity_anchor_resolved)
-            : null;
-        const activeIdentity = workspace.state.generation_mode !== "ref2va" ? null : frozenIdentity?.active
-            ? workspace.state.identity_anchors?.find(item => item.anchor_id === frozenIdentity.anchor_id)
-            : (!useFrozen && widget(node, "use_identity_anchor")?.value !== false
-                ? workspace.state.active_identity_anchor : null);
-        const identityReference = activeIdentity && activeIdentity.enabled !== false ? {
+        let resolvedIdentities = [];
+        if (workspace.state.generation_mode === "ref2va") {
+            if (useFrozen) {
+                const frozen = take?.settings?.identity_anchors?.length
+                    ? take.settings.identity_anchors
+                    : card.identity_anchors_resolved?.length
+                        ? card.identity_anchors_resolved
+                        : [take?.settings?.identity_anchor || card.identity_anchor_resolved].filter(item => item?.active);
+                resolvedIdentities = frozen.map(info => workspace.state.identity_anchors?.find(item => item.anchor_id === info.anchor_id)).filter(Boolean);
+            } else if (widget(node, "use_identity_anchor")?.value !== false) {
+                for (const [subject, anchorId] of Object.entries(workspace.state.active_identity_anchors || {}).sort(([left], [right]) => left.localeCompare(right))) {
+                    const item = workspace.state.identity_anchors?.find(candidate => candidate.anchor_id === anchorId);
+                    const policy = card.identity_anchor_overrides?.[subject] || "project";
+                    if (item && (policy === "enabled" || (policy === "project" && item.enabled !== false))) resolvedIdentities.push(item);
+                }
+            }
+        }
+        const identityReferences = resolvedIdentities.map(activeIdentity => ({
             enabled: true,
             label: activeIdentity.label || activeIdentity.subject_id || "Identity Anchor",
-            detail: `${activeIdentity.subject_id || "identity"} · Card ${activeIdentity.source_card_number || activeIdentity.source_card_artifact_number || "?"}`,
+            detail: activeIdentity.selection_source === "imported_image"
+                ? `${activeIdentity.subject_id || "identity"} · Imported image`
+                : `${activeIdentity.subject_id || "identity"} · Card ${activeIdentity.source_card_number || activeIdentity.source_card_artifact_number || "?"}`,
             thumbnail: api.apiURL(`/longcaster/cards/anchor?project=${encodeURIComponent(workspace.state.project)}&anchor=${encodeURIComponent(activeIdentity.anchor_id)}`),
-        } : null;
-        const result = assemblePictureReferences({globalPictures, cardReference, identityReference});
+        }));
+        const result = assemblePictureReferences({globalPictures, cardReference, identityReferences});
         pictureToggle.textContent = `Pictures (${result.count})`;
         pictureToggle.classList.toggle("active", workspace.pictureRailOpen);
         pictureToggle.setAttribute("aria-expanded", String(workspace.pictureRailOpen));
@@ -1726,6 +1817,7 @@ function createCardsWorkspace(node) {
             card_reference_settings: workspace.state.generation_mode === "ref2va" ? referenceSettings(card.card_reference) : null,
             continuation_strategy: card.continuation_strategy,
             color_anchor_source_card_id: card.color_anchor_source_card_id,
+            identity_anchor_overrides: card.identity_anchor_overrides || {},
             refine_enabled: Boolean(card.refine_enabled),
         };
         workspace.dirty = false; workspace.dirtySections.clear();
@@ -2174,11 +2266,55 @@ function createCardsWorkspace(node) {
         } catch (error) { setMessage(`Identity update failed: ${error.message}`, true); }
     }
 
+    async function importIdentity(file) {
+        if (!file || workspace.state.pending_operation) return;
+        if (workspace.state.generation_mode !== "ref2va") {
+            setMessage("Identity anchors currently require a REF2VA project.", true);
+            return;
+        }
+        const subjectId = identitySubject.value.trim();
+        if (!subjectId) {
+            setMessage("Enter a subject before importing an identity image.", true);
+            identitySubject.focus();
+            return;
+        }
+        if (identityScope.value === "custom" && !identityCustom.value.trim()) {
+            setMessage("Custom identity scope requires an instruction describing what may be inherited.", true);
+            identityCustom.focus();
+            return;
+        }
+        if (!await flush()) return;
+        const form = new FormData();
+        form.append("project", workspace.state.project);
+        form.append("revision", String(workspace.state.revision));
+        form.append("subject_id", subjectId);
+        form.append("label", identityLabel.value.trim() || file.name || "imported identity");
+        form.append("identity_scope", identityScope.value);
+        form.append("custom_identity_instruction", identityScope.value === "custom" ? identityCustom.value.trim() : "");
+        form.append("image", file, file.name || "identity-image");
+        identityImport.classList.add("disabled");
+        identityImportInput.disabled = true;
+        setMessage(`Importing identity image ${file.name || "image"}…`);
+        try {
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/identity/import", {
+                method: "POST", body: form,
+            }));
+            updateState(body);
+            setMessage(body.message || "Identity image imported.");
+        } catch (error) {
+            setMessage(`Identity import failed: ${error.message}`, true);
+        } finally {
+            identityImportInput.value = "";
+            renderIdentitySource();
+        }
+    }
+
     async function manageDraftTake(action, card, take = null) {
-        if (!card || !await flush()) return;
-        if (action === "select" && card.draft_inputs_dirty && !confirm(
-            "Select this saved take and discard the current unrendered prompt or seed changes?"
+        if (!card) return;
+        if (action === "select" && (workspace.dirty || workspace.saving || card.draft_inputs_dirty) && !confirm(
+            "Select this saved take and restore its prompt and seed? Current unrendered prompt or seed changes will be discarded."
         )) return;
+        if (!await flush()) return;
         try {
             const body = await responseJson(await api.fetchApi("/longcaster/cards/take", {
                 method: "POST", headers: {"Content-Type": "application/json"},
@@ -2198,6 +2334,62 @@ function createCardsWorkspace(node) {
         } catch (error) {
             setMessage(`Draft take update failed: ${error.message}`, true);
         }
+    }
+
+    function selectedProjectPreviewClips() {
+        const clips = [];
+        for (const card of workspace.state?.cards || []) {
+            const take = card.draft_takes?.find(
+                (item) => item.id === card.selected_draft_take_id
+            );
+            if (take?.preview_available) {
+                clips.push({
+                    cardId: card.id,
+                    cardNumber: card.timeline_index + 1,
+                    takeId: take.id,
+                    version: take.preview_version || take.artifact_sha256 || "",
+                });
+            } else if (card.preview_available) {
+                clips.push({
+                    cardId: card.id,
+                    cardNumber: card.timeline_index + 1,
+                    takeId: null,
+                    version: card.preview_version || card.updated_at || "",
+                });
+            }
+        }
+        return clips;
+    }
+
+    function resetProjectPreview() {
+        projectPreviewVideo.pause();
+        projectPreviewVideo.removeAttribute("src");
+        projectPreviewVideo.load();
+        projectPreviewVideo.hidden = true;
+        workspace.projectPreviewClips = [];
+        workspace.projectPreviewIndex = -1;
+        playProjectPreview.textContent = "Play Project Preview";
+        projectPreviewStatus.textContent = "Plays each selected card preview in timeline order without creating a stitched file.";
+    }
+
+    function loadProjectPreviewClip(index, autoplay = true) {
+        const clip = workspace.projectPreviewClips[index];
+        if (!clip) return;
+        workspace.projectPreviewIndex = index;
+        const query = new URLSearchParams({
+            project: workspace.state.project,
+            card: clip.cardId,
+            version: clip.version,
+        });
+        if (clip.takeId) query.set("take", clip.takeId);
+        projectPreviewVideo.src = api.apiURL(`/longcaster/cards/preview?${query.toString()}`);
+        projectPreviewVideo.hidden = false;
+        projectPreviewVideo.load();
+        projectPreviewStatus.textContent = `Playing Card ${clip.cardNumber} · clip ${index + 1} of ${workspace.projectPreviewClips.length}`;
+        playProjectPreview.textContent = "Restart Project Preview";
+        if (autoplay) projectPreviewVideo.play().catch(() => {
+            projectPreviewStatus.textContent = `Card ${clip.cardNumber} ready · press play to continue.`;
+        });
     }
 
     function focusReferenceGraph() {
@@ -2383,6 +2575,25 @@ function createCardsWorkspace(node) {
     };
     saveLoraWords.onclick = () => saveProjectLoraWords();
     identityScope.onchange = () => { customScopeField.hidden = identityScope.value !== "custom"; };
+    identityImport.onclick = () => { if (!identityImportInput.disabled) identityImportInput.click(); };
+    identityImportInput.onclick = (event) => event.stopPropagation();
+    identityImport.onkeydown = (event) => {
+        if ((event.key === "Enter" || event.key === " ") && !identityImportInput.disabled) {
+            event.preventDefault();
+            identityImportInput.click();
+        }
+    };
+    identityImportInput.onchange = () => importIdentity(identityImportInput.files?.[0]);
+    identityImport.ondragover = (event) => {
+        event.preventDefault();
+        if (!identityImportInput.disabled) identityImport.classList.add("dragging");
+    };
+    identityImport.ondragleave = () => identityImport.classList.remove("dragging");
+    identityImport.ondrop = (event) => {
+        event.preventDefault();
+        identityImport.classList.remove("dragging");
+        if (!identityImportInput.disabled) importIdentity(event.dataTransfer?.files?.[0]);
+    };
     const syncIdentityPreviewFrame = () => { if (identityVideo.src) identityFrame.value = String(Math.max(0, Math.round(identityVideo.currentTime * 24))); };
     identityVideo.addEventListener("pause", syncIdentityPreviewFrame);
     identityVideo.addEventListener("seeked", syncIdentityPreviewFrame);
@@ -2466,6 +2677,40 @@ function createCardsWorkspace(node) {
     refreshIdentities.onclick = async () => { if (await flush()) await load(workspace.state.project); };
     refreshReferences.onclick = async () => { if (await flush()) { await load(workspace.state.project); renderReferences(selectedCard()); } };
     editReferences.onclick = () => focusReferenceGraph();
+    exportProjectPrompts.onclick = async () => {
+        if (!await flush()) return;
+        const link = document.createElement("a");
+        link.href = api.apiURL(`/longcaster/cards/prompts/export?project=${encodeURIComponent(workspace.state.project)}`);
+        link.download = "";
+        document.body.append(link);
+        link.click();
+        link.remove();
+        setMessage("Project prompt export started.");
+    };
+    playProjectPreview.onclick = async () => {
+        if (!await flush()) return;
+        workspace.projectPreviewClips = selectedProjectPreviewClips();
+        if (!workspace.projectPreviewClips.length) {
+            resetProjectPreview();
+            setMessage("No selected card previews are available.", true);
+            return;
+        }
+        loadProjectPreviewClip(0);
+    };
+    projectPreviewVideo.addEventListener("ended", () => {
+        const next = workspace.projectPreviewIndex + 1;
+        if (next < workspace.projectPreviewClips.length) {
+            loadProjectPreviewClip(next);
+            return;
+        }
+        const count = workspace.projectPreviewClips.length;
+        projectPreviewStatus.textContent = `Project preview complete · ${count} clip${count === 1 ? "" : "s"} played.`;
+        playProjectPreview.textContent = "Replay Project Preview";
+    });
+    projectPreviewVideo.addEventListener("error", () => {
+        const clip = workspace.projectPreviewClips[workspace.projectPreviewIndex];
+        projectPreviewStatus.textContent = `Could not play Card ${clip?.cardNumber ?? "?"}'s selected preview.`;
+    });
     projectSelect.onchange = () => workspace.switchProject(projectSelect.value);
     refresh.onclick = async () => { if (await flush()) await loadProjects(); }; close.onclick = async () => { if (await flush()) root.hidden = true; };
     window.addEventListener("beforeunload", (event) => { if (workspace.dirty) { event.preventDefault(); event.returnValue = ""; } });

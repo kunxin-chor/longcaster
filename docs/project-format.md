@@ -14,6 +14,8 @@
 ├── anchors/
 │   └── <source card UUID>/
 │       └── <anchor UUID>.png
+├── identity_imports/
+│   └── <anchor UUID>.png
 ├── derivatives/
 │   └── <source card UUID>/
 │       └── refine_<derivative UUID>.mmh3
@@ -25,13 +27,13 @@
 
 ## Manifest
 
-`project.json` schema version 17 contains project-wide fixed settings and a list of cards. Schema 1–16 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, drift-treatment, and persistent color-baseline-statistics fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 19 contains project-wide fixed settings and a list of cards. Schema 1–18 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, and imported-identity fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `17`. |
+| `schema_version` | Manifest schema, currently `19`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
@@ -42,6 +44,7 @@ Project fields:
 | `active_card_id` | Stable UUID of the current card. |
 | `cards` | Timeline-ordered card records. |
 | `active_identity_anchors` | Subject ID to active historical identity-anchor UUID bindings. |
+| `imported_identity_anchors` | Project-owned identity checkpoints imported from arbitrary images. They have no source-card dependency and remain valid when card renders are invalidated. |
 | `color_baseline_stats` | Cached Color-Stable scene statistics keyed by baseline card UUID and validated against that card's artifact hash, canvas, VAE fingerprint, and algorithm version. Entries are removed when their source render is invalidated. |
 | `pending_operation` | In-flight generation or refine marker, or `null`. |
 | `last_operation` | Last completed, failed, or interrupted operation. |
@@ -62,6 +65,7 @@ Card fields include:
 | `continuation_source` | Frozen source-card UUID plus `accepted_master` or a ready derivative UUID for this card's direct handover. |
 | `continuation_source_preference` | Default source to select when the next direct-continuation card is appended. |
 | `color_anchor_source_card_id` | User-selectable earlier accepted Color-Stable baseline for a direct continuation. New direct cards inherit the preceding card's choice; fresh independent/Image Restart cards point to themselves. |
+| `identity_anchor_overrides` | Subject ID to `project`, `enabled`, or `disabled`. Missing subjects behave as `project`; the setting is frozen into each successful take. |
 | `refine_enabled` | Manual-mode decision captured while the card is editable; ignored when project refine is Off or Auto. |
 | `derivatives` | Rebuildable refine records; these never replace or mutate the accepted master. |
 | `accepted_publication_id` | Stable UUID of the selected accepted take, or `null`. |
@@ -83,9 +87,11 @@ Card fields include:
 
 Each anchor record contains `anchor_id`, `source_card_id`, `source_frame_index`, `source_timestamp_seconds`, `role`, `asset_path`, `asset_sha256`, `media_type`, `created_at`, `enabled`, and `mode`. Identity records additionally contain `source_preview_frame_index`, `source_preview_timestamp_seconds`, `subject_id`, `label`, nullable `strength`, `identity_scope`, and nullable `custom_identity_instruction`. Valid scopes are `face_only`, `face_clothing`, `face_body`, `everything`, and `custom`; a custom scope requires non-empty instruction text. Older identity anchors migrate to `face_only`. User-facing frame selection excludes a card's continuation prefix; `source_frame_index` records the translated physical MMH3 frame. Both card and anchor identities are UUIDs.
 
+Imported identities use the same runtime identity fields but live in `imported_identity_anchors`, set `selection_source=imported_image`, and keep all source-card/frame fields null. Uploads are limited to 32 MiB and 32 million pixels, normalized to orientation-corrected RGB PNG, hashed, and stored under `identity_imports/`. Importing immediately selects the checkpoint for its subject. Deleting it removes that project-owned PNG; clearing only removes its active binding.
+
 The optional `preview` record contains `asset_path`, `asset_sha256`, `source_artifact_sha256`, `created_at`, `media_type`, and `fps`. It is derived review media and can be rebuilt or deleted without affecting the immutable MMH3 master or continuation. LongCaster accepts a registered preview only when its source hash matches the card's current draft or master artifact.
 
-Each `draft_takes` record freezes a successful attempt number, artifact path/hash, prompt representation/hash, requested duration, seed, `ref_image_size`, continuation source, recipe/fingerprint, references, generated-frame measurements, optional preview, and creation time. Selecting a take restores its exact `match`/`max` choice along with the other inputs. The selected record is the only take eligible for acceptance. An unselected take and its unshared preview may be deleted; the selected take must first be replaced by another selection. Accepted cards retain their alternatives for inspection, but must be unpublished before another take can be selected.
+Each `draft_takes` record freezes a successful attempt number, artifact path/hash, prompt representation/hash, requested duration, seed, `ref_image_size`, continuation source, recipe/fingerprint, references, generated-frame measurements, optional preview, and creation time. Selecting a take restores its saved prompt representation and seed, along with its exact `match`/`max` choice and other generation inputs; Studio and the project node update to those restored values. The selected record is the only take eligible for acceptance. An unselected take and its unshared preview may be deleted; the selected take must first be replaced by another selection. Accepted cards retain their alternatives for inspection, but must be unpublished before another take can be selected.
 
 The recipe's optional `upstream_provenance` record snapshots the submitted nodes feeding the first-pass `model`, `clip`, video/audio VAE, `sigmas`, and reference-packet inputs. It stores node types, connections, safe widget values, branch membership, an extracted model/LoRA/model-path summary, and a graph SHA-256; it never stores tensors or model bytes. Refine-only branches are excluded because they do not produce the draft. Sensitive input names are redacted, unusually large values and graphs are bounded with `truncated=true`, and older takes without execution provenance remain valid.
 
@@ -103,9 +109,9 @@ Removing an appended unaccepted tail is a separate destructive operation. It is 
 
 Invalidating a render keeps the card UUID, timeline position, prompt sections, duration, seed, and continuation choice, but permanently removes its current master/draft, all retained takes, previews, refinements, anchors, and superseded publications. It clears frozen recipe/output measurements and changes the card to `INVALIDATED`, from which Generate Draft can run again using the currently connected model graph. Only the active final card may be invalidated; a card with any later or dependent card is rejected. Invalidating an accepted card reserves a new artifact number so an accepted filename is never reused.
 
-Project-wide invalidation performs the same render-lineage removal for every card in one guarded operation, preserves all card definitions, reserves fresh artifact numbers, and makes Card 1 active. Resolution editing then unlocks in the Project tab. Regeneration proceeds in timeline order: after an invalidated card is regenerated and accepted, the next preserved invalidated card becomes active and its direct continuation source is rebound to the newly accepted predecessor. Resolution locks again as soon as regeneration begins.
+Project-wide invalidation performs the same render-lineage removal for every card in one guarded operation, preserves all card definitions and imported identity checkpoints/bindings, reserves fresh artifact numbers, and makes Card 1 active. Card-derived identity checkpoints are removed with their source renders. Resolution editing then unlocks in the Project tab. Regeneration proceeds in timeline order: after an invalidated card is regenerated and accepted, the next preserved invalidated card becomes active and its direct continuation source is rebound to the newly accepted predecessor. Resolution locks again as soon as regeneration begins.
 
-Duplicate-and-invalidate creates an independent project containing the source settings and complete card-definition timeline without cloning any render artifacts. All copied cards start `INVALIDATED`, artifact numbering restarts at one in the new project, identity bindings are cleared, Card 1 is active, and resolution editing is immediately available. The source manifest and assets are never modified.
+Duplicate-and-invalidate creates an independent project containing the source settings, complete card-definition timeline, and copied imported identity checkpoints without cloning render artifacts. All copied cards start `INVALIDATED`, artifact numbering restarts at one, card-derived identity bindings are cleared, imported-identity bindings remain selected, Card 1 is active, and resolution editing is immediately available. The source manifest and assets are never modified.
 
 ## Commit and recovery rules
 
