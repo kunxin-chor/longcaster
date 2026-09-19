@@ -80,6 +80,14 @@ test("Cards UI invalidates a selected card and its complete tail", () => {
     assert.match(source, /Card .* will become the active card for regeneration/);
 });
 
+test("every card exposes its full prompt as a clipboard action", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /"Copy Prompt"/);
+    assert.match(source, /copyTextToClipboard\(item\.assembled_prompt \|\| ""\)/);
+    assert.match(source, /navigator\?\.clipboard\?\.writeText/);
+    assert.match(source, /execCommand\?\.\("copy"\)/);
+});
+
 test("remaining batch plan accepts intermediates and leaves the final draft", () => {
     const { context } = frontend();
     const state = {

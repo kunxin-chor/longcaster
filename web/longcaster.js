@@ -525,6 +525,28 @@ function cardsElement(tag, className, textContent) {
     return element;
 }
 
+async function copyTextToClipboard(text) {
+    const value = String(text ?? "");
+    if (globalThis.navigator?.clipboard?.writeText) {
+        try {
+            await globalThis.navigator.clipboard.writeText(value);
+            return;
+        } catch (_) {
+            // Fall through for browsers that expose Clipboard but deny access.
+        }
+    }
+    const fallback = document.createElement("textarea");
+    fallback.value = value;
+    fallback.readOnly = true;
+    fallback.style.position = "fixed";
+    fallback.style.opacity = "0";
+    document.body.append(fallback);
+    fallback.select();
+    const copied = document.execCommand?.("copy");
+    fallback.remove();
+    if (!copied) throw new Error("clipboard access is unavailable");
+}
+
 function promptLineDiff(archivedPrompt, workingPrompt) {
     const archived = String(archivedPrompt ?? "").split("\n");
     const working = String(workingPrompt ?? "").split("\n");
@@ -601,7 +623,7 @@ function createCardsWorkspace(node) {
         .lc-cards-projectpath{color:#89a2b4;font:11px ui-monospace,monospace}.lc-cards-new{display:grid;grid-template-columns:2fr repeat(6,minmax(90px,1fr)) auto auto;gap:8px;align-items:end;padding:10px 14px;background:#102333;border-bottom:1px solid #29465b}.lc-cards-new[hidden]{display:none}.lc-cards-new label{display:grid;gap:4px;color:#a9bdca}.lc-cards-resolution{min-height:31px;display:flex;align-items:center;color:#dce8f3;font:12px ui-monospace,monospace;white-space:nowrap}
         .lc-studio-tabs{display:flex;gap:5px;padding:7px 14px;background:#0a1925;border-bottom:1px solid #254052}.lc-studio-tab{min-width:110px}.lc-studio-tab.active{background:#0968bd!important;border-color:#1684e6!important}.lc-cards-project{min-height:0;overflow:auto;padding:14px;display:grid;grid-template-columns:minmax(520px,1fr) minmax(340px,520px);gap:14px;align-items:start}.lc-project-panel{min-width:0;background:#0a1824;border:1px solid #20394b;border-radius:7px;padding:12px}.lc-project-panel h2{margin:0 0 5px}.lc-project-identity-source{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;align-items:end;margin-top:12px}.lc-project-identity-source label{display:grid;gap:4px;color:#a9bdca}.lc-project-identity-video{grid-column:1/-1;width:100%;max-height:340px;background:#02070a;border-radius:6px}.lc-project-identity-form{grid-column:1/-1;display:grid;grid-template-columns:minmax(140px,1fr) 110px minmax(180px,1fr) minmax(150px,1fr);gap:7px}.lc-project-identity-form label{display:grid;gap:4px}.lc-project-identity-form .wide{grid-column:1/-1}.lc-project-identity-form textarea{min-height:70px;resize:vertical}
         .lc-cards-main{min-height:0;display:grid;grid-template-columns:260px minmax(620px,1fr) 420px}.lc-cards-sidebar,.lc-cards-preview{min-height:0;overflow:auto;background:#0a1824;padding:10px;border-right:1px solid #20394b}.lc-cards-preview{border-right:0;border-left:1px solid #20394b}
-        .lc-cards-list{display:grid;gap:5px}.lc-card-item{display:grid!important;grid-template-columns:34px 1fr;gap:7px;text-align:left;padding:9px!important}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
+        .lc-cards-list{display:grid;gap:5px}.lc-card-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px}.lc-card-item{min-width:0;display:grid!important;grid-template-columns:34px minmax(0,1fr);gap:7px;text-align:left;padding:9px!important}.lc-card-copy{align-self:stretch;padding:5px 7px!important;font-size:11px}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
         .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}.lc-picture-rail{min-width:0;height:430px;overflow:auto;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:8px;box-sizing:border-box}.lc-picture-rail-heading{display:grid;gap:2px;margin-bottom:8px}.lc-picture-rail-heading small{color:#91aabd}.lc-picture-rail-list{display:grid;gap:8px}.lc-picture-tile{display:grid;gap:3px;padding:7px;background:#0d2130;border:1px solid #29465b;border-radius:6px;overflow:hidden}.lc-picture-tile img,.lc-picture-placeholder{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;background:#02070a}.lc-picture-placeholder{display:grid;place-items:center;color:#718898;font-weight:700}.lc-picture-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lc-picture-tile small{color:#91aabd;line-height:1.25}.lc-picture-tile.inactive{opacity:.55;border-style:dashed}.lc-picture-toggle.active{background:#0968bd!important;border-color:#1684e6!important}
         .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-card-identity-overrides{display:grid;gap:5px}.lc-card-identity-override{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.lc-card-identity-override span{overflow:hidden;text-overflow:ellipsis}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
         .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-project{grid-template-columns:1fr}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
@@ -1260,6 +1282,7 @@ function createCardsWorkspace(node) {
         renderProjectResolutionChoice();
         list.replaceChildren();
         for (const item of state.cards || []) {
+            const row = cardsElement("div", "lc-card-row");
             const button = cardsElement("button", `lc-card-item${item.id === card?.id ? " selected" : ""}`);
             const number = cardsElement("div", "lc-card-number", String(item.timeline_index + 1).padStart(2, "0"));
             const body = cardsElement("div", "");
@@ -1267,7 +1290,18 @@ function createCardsWorkspace(node) {
             body.append(cardsElement("div", `lc-card-meta lc-render-${item.render_validity}`, `${item.status} · ${item.render_validity} · ${Number(item.actual_duration_seconds ?? item.requested_duration_seconds ?? 0).toFixed(1)}s`));
             button.append(number, body);
             button.onclick = async () => { if (await flush()) { workspace.selectedCardId = item.id; workspace.viewedTakeId = item.selected_draft_take_id || null; render(); } };
-            list.append(button);
+            const copyPrompt = cardsElement("button", "lc-card-copy", "Copy Prompt");
+            copyPrompt.title = `Copy Card ${item.timeline_index + 1}'s full prompt`;
+            copyPrompt.onclick = async () => {
+                try {
+                    await copyTextToClipboard(item.assembled_prompt || "");
+                    setMessage(`Card ${item.timeline_index + 1} full prompt copied.`);
+                } catch (error) {
+                    setMessage(`Could not copy Card ${item.timeline_index + 1}'s prompt: ${error.message}`, true);
+                }
+            };
+            row.append(button, copyPrompt);
+            list.append(row);
         }
         if (!card) return;
         const isEditable = editable(card);
