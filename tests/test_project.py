@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from longcaster.duplicate import clone_card_archive, duplicate_project
 from longcaster.fingerprint import generation_fingerprint
-from longcaster.project import ProjectError, ProjectStore, sha256_file
+from longcaster.project import (
+    ProjectError, ProjectStore, sha256_file, validate_card_lora_stack,
+)
 from longcaster.prompt_sections import assemble_prompt, edit_sections, empty_prompt_sections, hash_prompt
 
 
@@ -27,10 +29,12 @@ class ProjectStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def _draft(self, action="generate", body=b"valid mmh3 stand-in", *, prompt="opening", seed=11, duration=5.0, ref_image_size=None):
+    def _draft(self, action="generate", body=b"valid mmh3 stand-in", *, prompt="opening", seed=11, duration=5.0, ref_image_size=None, lora_stack=None):
         recipe = {"sigmas": [12, 0]}
         if ref_image_size is not None:
             recipe["ref_image_size"] = ref_image_size
+        if lora_stack is not None:
+            recipe["lora_stack"] = lora_stack
         fingerprint = generation_fingerprint({"seed": seed, **recipe})
         manifest, card = self.store.begin_generation(
             action=action,
@@ -125,6 +129,48 @@ class ProjectStoreTests(unittest.TestCase):
         appended = self.store.append(prompt="next", duration_seconds=5, seed=12)
         self.assertEqual(self.store.active_card(appended)["ref_image_size"], "max")
 
+    def test_card_lora_stack_is_dirty_frozen_restored_and_inherited(self):
+        first = self._draft()
+        card = self.store.active_card(first)
+        first_take_id = card["selected_draft_take_id"]
+        stack = [{
+            "lora_name": "characters/hero.safetensors",
+            "strength_model": 0.65,
+            "activation_words": "heroToken",
+            "enabled": True,
+        }]
+        changed = self.store.update_card_editor(
+            card_id=card["id"], expected_revision=first["revision"], lora_stack=stack,
+        )
+        self.assertTrue(self.store.active_card(changed)["draft_inputs_dirty"])
+        retried = self._draft(action="retry", body=b"lora take", lora_stack=stack)
+        card = self.store.active_card(retried)
+        self.assertEqual(card["lora_stack"], stack)
+        self.assertEqual(card["draft_takes"][-1]["lora_stack"], stack)
+
+        selected = self.store.select_draft_take(
+            card_id=card["id"], take_id=first_take_id,
+            expected_revision=retried["revision"],
+        )
+        self.assertEqual(self.store.active_card(selected)["lora_stack"], [])
+
+        latest_take = self.store.active_card(retried)["draft_takes"][-1]
+        restored = self.store.select_draft_take(
+            card_id=card["id"], take_id=latest_take["id"],
+            expected_revision=selected["revision"],
+        )
+        self.store.accept()
+        appended = self.store.append(prompt="next", duration_seconds=5, seed=12)
+        self.assertEqual(self.store.active_card(appended)["lora_stack"], stack)
+
+    def test_card_lora_stack_validation(self):
+        with self.assertRaisesRegex(ProjectError, "invalid lora_name"):
+            validate_card_lora_stack([{"lora_name": "../escape.safetensors"}])
+        with self.assertRaisesRegex(ProjectError, "between -100 and 100"):
+            validate_card_lora_stack([{
+                "lora_name": "hero.safetensors", "strength_model": float("inf")
+            }])
+
     def test_schema_twelve_migrates_ref_image_size_from_recipe(self):
         manifest = self._draft(ref_image_size="max")
         document = json.loads(self.store.manifest_path.read_text(encoding="utf-8"))
@@ -137,7 +183,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(migrated["color_baseline_stats"], {})
         self.assertEqual(card["ref_image_size"], "max")
         self.assertEqual(card["draft_takes"][0]["ref_image_size"], "max")
@@ -290,7 +336,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -315,7 +361,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -326,7 +372,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -483,7 +529,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -843,7 +889,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         migrated_card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(len(migrated_card["draft_takes"]), 1)
         self.assertEqual(
             migrated_card["selected_draft_take_id"], migrated_card["draft_takes"][0]["id"]
@@ -860,7 +906,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(card["selected_draft_take_id"], original_take_id)
         self.assertEqual(len(card["draft_takes"]), 1)
 
@@ -1020,7 +1066,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(card["prompt_format"], "legacy_flat")
         self.assertEqual(card["prompt"], original)
         self.assertEqual(card["assembled_prompt"], original)
@@ -1046,7 +1092,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = store.load()
         card = store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertIn("summary:\nA player enters the court.", card["assembled_prompt"])
         self.assertNotIn("<summary>", card["assembled_prompt"])
         self.assertEqual(card["prompt"], card["assembled_prompt"])
@@ -1425,7 +1471,7 @@ class ProjectStoreTests(unittest.TestCase):
         raw["cards"][0].pop("color_anchor_source_card_id", None)
         self.store.manifest_path.write_text(json.dumps(raw), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 19)
+        self.assertEqual(migrated["schema_version"], 20)
         self.assertEqual(migrated["continuation_treatment"], "off")
         self.assertEqual(
             migrated["cards"][0]["color_anchor_source_card_id"],

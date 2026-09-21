@@ -51,6 +51,42 @@ class ProjectStateInputTests(unittest.TestCase):
                 entrypoint = getattr(node, node.FUNCTION)
                 self.assertIn("project_state", inspect.signature(entrypoint).parameters)
 
+    def test_card_lora_node_exposes_model_and_receipt(self):
+        inputs = self.nodes.LongCasterCardLoras.INPUT_TYPES()["required"]
+        self.assertEqual(inputs["model"][0], "MODEL")
+        self.assertEqual(inputs["project_name"][0], "STRING")
+        self.assertEqual(
+            self.nodes.LongCasterCardLoras.RETURN_TYPES,
+            ("MODEL", "LONGCASTER_LORA_STATE"),
+        )
+
+    def test_card_lora_loader_receives_a_string_path(self):
+        source = (ROOT / "nodes.py").read_text(encoding="utf-8")
+        self.assertIn(
+            'comfy.utils.load_torch_file(\n                str(path),',
+            source,
+        )
+
+    def test_card_lora_receipt_must_match_active_card(self):
+        stack = [{
+            "lora_name": "hero.safetensors", "strength_model": 0.7,
+            "activation_words": "heroToken", "enabled": True,
+        }]
+        card = {"id": "card-one", "timeline_index": 0, "lora_stack": stack}
+        manifest = {"project_name": "film", "cards": [card]}
+        receipt = {
+            "project": "film", "card_id": "card-one",
+            "stack_fingerprint": self.nodes._card_lora_stack_fingerprint(card),
+            "resolved_loras": [{**stack[0], "asset_sha256": "a" * 64}],
+        }
+        self.assertEqual(
+            self.nodes._validate_card_lora_state(manifest, card, receipt),
+            receipt["resolved_loras"],
+        )
+        receipt["card_id"] = "another-card"
+        with self.assertRaisesRegex(self.nodes.ProjectError, "another active card"):
+            self.nodes._validate_card_lora_state(manifest, card, receipt)
+
     def test_invalid_connected_state_fails_clearly(self):
         with self.assertRaisesRegex(self.nodes.ProjectError, "not valid LongCaster JSON"):
             self.nodes._project_from_state("fallback", "not-json")
@@ -64,7 +100,8 @@ class ProjectStateInputTests(unittest.TestCase):
         comfy = types.ModuleType("comfy")
         comfy.samplers = samplers
         with patch.dict(sys.modules, {"comfy": comfy, "comfy.samplers": samplers}):
-            required = self.nodes.LongCasterProject.INPUT_TYPES()["required"]
+            input_types = self.nodes.LongCasterProject.INPUT_TYPES()
+            required = input_types["required"]
         self.assertEqual(
             list(required)[-4:],
             ["refine_cadence", "refine_sampler_name", "refine_seed_mode", "continuation_treatment"],
@@ -72,6 +109,8 @@ class ProjectStateInputTests(unittest.TestCase):
         sampler_choices = required["refine_sampler_name"][0]
         self.assertIn("manual", sampler_choices)
         self.assertNotIn("manual", list(sampler_choices))
+        self.assertEqual(input_types["optional"]["card_lora_state"][0], "LONGCASTER_LORA_STATE")
+        self.assertEqual(input_types["optional"]["refine_card_lora_state"][0], "LONGCASTER_LORA_STATE")
 
     def test_displaced_refine_values_normalize_before_project_actions(self):
         normalize = self.nodes._normalize_shifted_treatment_widgets

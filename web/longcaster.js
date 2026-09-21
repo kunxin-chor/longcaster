@@ -90,11 +90,15 @@ function syncProjectNode(node, state) {
     node.longcasterState = { ...state, active_card: card, card_count: state.card_count ?? state.cards?.length };
     node.title = `MiniMax H3 LongCaster · ${state.project} · ${card?.status ?? "UNKNOWN"}`;
     for (const dependent of node.graph?._nodes || []) {
-        if (!isNodeType(dependent, "LongCasterIdentityAnchor") && !isNodeType(dependent, "LongCasterTimelineExport")) continue;
+        if (!isNodeType(dependent, "LongCasterIdentityAnchor")
+            && !isNodeType(dependent, "LongCasterTimelineExport")
+            && !isNodeType(dependent, "LongCasterCardLoras")) continue;
         const project = widget(dependent, "project_name");
         if (project) project.value = state.project;
         dependent.longcasterProjectState = state;
-        if (isNodeType(dependent, "LongCasterTimelineExport")) {
+        if (isNodeType(dependent, "LongCasterCardLoras")) {
+            dependent.title = `Card LoRAs · ${state.project} · Card ${(card?.timeline_index ?? 0) + 1}`;
+        } else if (isNodeType(dependent, "LongCasterTimelineExport")) {
             dependent.title = `Join ${state.project} cards (enable, then Queue)`;
         } else if (dependent.longcasterIdentityProjectSelect) {
             refreshIdentityProject(dependent, state.project);
@@ -623,9 +627,9 @@ function createCardsWorkspace(node) {
         .lc-cards-projectpath{color:#89a2b4;font:11px ui-monospace,monospace}.lc-cards-new{display:grid;grid-template-columns:2fr repeat(6,minmax(90px,1fr)) auto auto;gap:8px;align-items:end;padding:10px 14px;background:#102333;border-bottom:1px solid #29465b}.lc-cards-new[hidden]{display:none}.lc-cards-new label{display:grid;gap:4px;color:#a9bdca}.lc-cards-resolution{min-height:31px;display:flex;align-items:center;color:#dce8f3;font:12px ui-monospace,monospace;white-space:nowrap}
         .lc-studio-tabs{display:flex;gap:5px;padding:7px 14px;background:#0a1925;border-bottom:1px solid #254052}.lc-studio-tab{min-width:110px}.lc-studio-tab.active{background:#0968bd!important;border-color:#1684e6!important}.lc-cards-project{min-height:0;overflow:auto;padding:14px;display:grid;grid-template-columns:minmax(520px,1fr) minmax(340px,520px);gap:14px;align-items:start}.lc-project-panel{min-width:0;background:#0a1824;border:1px solid #20394b;border-radius:7px;padding:12px}.lc-project-panel h2{margin:0 0 5px}.lc-project-identity-source{display:grid;grid-template-columns:minmax(180px,1fr) auto;gap:8px;align-items:end;margin-top:12px}.lc-project-identity-source label{display:grid;gap:4px;color:#a9bdca}.lc-project-identity-video{grid-column:1/-1;width:100%;max-height:340px;background:#02070a;border-radius:6px}.lc-project-identity-form{grid-column:1/-1;display:grid;grid-template-columns:minmax(140px,1fr) 110px minmax(180px,1fr) minmax(150px,1fr);gap:7px}.lc-project-identity-form label{display:grid;gap:4px}.lc-project-identity-form .wide{grid-column:1/-1}.lc-project-identity-form textarea{min-height:70px;resize:vertical}
         .lc-cards-main{min-height:0;display:grid;grid-template-columns:260px minmax(620px,1fr) 420px}.lc-cards-sidebar,.lc-cards-preview{min-height:0;overflow:auto;background:#0a1824;padding:10px;border-right:1px solid #20394b}.lc-cards-preview{border-right:0;border-left:1px solid #20394b}
-        .lc-cards-list{display:grid;gap:5px}.lc-card-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:5px}.lc-card-item{min-width:0;display:grid!important;grid-template-columns:34px minmax(0,1fr);gap:7px;text-align:left;padding:9px!important}.lc-card-copy{align-self:stretch;padding:5px 7px!important;font-size:11px}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
+        .lc-cards-list{display:grid;gap:5px}.lc-card-row{display:grid;grid-template-columns:minmax(0,1fr) 34px;gap:5px}.lc-card-item{min-width:0;display:grid!important;grid-template-columns:34px minmax(0,1fr);gap:7px;text-align:left;padding:9px!important}.lc-card-copy{align-self:stretch;width:34px;padding:4px!important;font-size:18px;line-height:1}.lc-card-item.selected{border-color:#168cf0;background:#123b5c}.lc-card-number{font-weight:700}.lc-card-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-card-meta{font-size:11px;color:#93a9b9;margin-top:3px}.lc-status-ACCEPTED,.lc-render-VALIDATED{color:#35d181}.lc-status-DRAFT{color:#53aaff}.lc-status-FAILED{color:#ff6666}.lc-status-INVALIDATED,.lc-render-INVALIDATED{color:#f5bd4d}.lc-status-EMPTY{color:#94a4b0}
         .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}.lc-picture-rail{min-width:0;height:430px;overflow:auto;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:8px;box-sizing:border-box}.lc-picture-rail-heading{display:grid;gap:2px;margin-bottom:8px}.lc-picture-rail-heading small{color:#91aabd}.lc-picture-rail-list{display:grid;gap:8px}.lc-picture-tile{display:grid;gap:3px;padding:7px;background:#0d2130;border:1px solid #29465b;border-radius:6px;overflow:hidden}.lc-picture-tile img,.lc-picture-placeholder{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;background:#02070a}.lc-picture-placeholder{display:grid;place-items:center;color:#718898;font-weight:700}.lc-picture-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lc-picture-tile small{color:#91aabd;line-height:1.25}.lc-picture-tile.inactive{opacity:.55;border-style:dashed}.lc-picture-toggle.active{background:#0968bd!important;border-color:#1684e6!important}
-        .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-card-identity-overrides{display:grid;gap:5px}.lc-card-identity-override{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.lc-card-identity-override span{overflow:hidden;text-overflow:ellipsis}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
+        .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-card-loras{grid-column:1/-1;border:1px solid #29465b;border-radius:6px;padding:9px;display:grid;gap:7px}.lc-card-lora-head{display:flex;align-items:center;gap:8px}.lc-card-lora-head strong{margin-right:auto}.lc-card-lora-list{display:grid;gap:6px}.lc-card-lora-row{display:grid;grid-template-columns:auto minmax(180px,1.4fr) 95px minmax(150px,1fr) auto;gap:6px;align-items:center}.lc-card-lora-row input[type=checkbox]{width:auto}.lc-card-lora-actions{display:flex;gap:4px}.lc-card-lora-actions button{padding:5px 7px}.lc-card-identity-overrides{display:grid;gap:5px}.lc-card-identity-override{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.lc-card-identity-override span{overflow:hidden;text-overflow:ellipsis}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
         .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-project{grid-template-columns:1fr}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
         .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}.lc-identity-import{grid-column:1/-1;box-sizing:border-box;min-height:76px;border:2px dashed #31546b;border-radius:7px;display:grid;place-items:center;padding:12px;color:#9fc0d4;background:#081520;cursor:pointer;text-align:center}.lc-identity-import:hover,.lc-identity-import.dragging{border-color:#1684e6;background:#0c2537;color:#d8edfa}.lc-identity-import.disabled{opacity:.5;cursor:not-allowed}.lc-identity-import input{display:none}.lc-identity-import small{display:block;margin-top:4px;color:#7897aa}
         .lc-project-resolution{display:grid;gap:9px}.lc-project-resolution-fields{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,.6fr) minmax(190px,1fr);gap:8px}.lc-project-resolution-fields label{display:grid;gap:4px;color:#a9bdca}.lc-project-resolution-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.lc-project-resolution-lock{color:#f5bd4d}
@@ -786,7 +790,18 @@ function createCardsWorkspace(node) {
     const refineEnabled = document.createElement("input"); refineEnabled.type = "checkbox";
     const refineEnabledLabel = cardsElement("label", "lc-refine-check"); refineEnabledLabel.append(refineEnabled, document.createTextNode("Create refined source after accepting this card"));
     refineEnabledField.append(refineEnabledLabel, cardsElement("div", "lc-cards-help", "Used only in Manual mode. The setting becomes read-only after acceptance."));
-    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, identityOverridesField, refImageSizeField, refineCadenceField, refineEnabledField);
+    const cardLoraField = cardsElement("section", "lc-card-loras");
+    const cardLoraHead = cardsElement("div", "lc-card-lora-head");
+    const addCardLora = cardsElement("button", "", "Add LoRA");
+    const refreshCardLoras = cardsElement("button", "", "Refresh List");
+    const cardLoraList = cardsElement("div", "lc-card-lora-list");
+    cardLoraHead.append(cardsElement("strong", "", "Card LoRAs"), addCardLora, refreshCardLoras);
+    cardLoraField.append(
+        cardLoraHead,
+        cardsElement("div", "lc-cards-help", "Applied in order by the LongCaster Card LoRAs node before ModelSampling and PDD. Activation words are injected only for enabled non-zero entries."),
+        cardLoraList,
+    );
+    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, identityOverridesField, refImageSizeField, refineCadenceField, refineEnabledField, cardLoraField);
     const cardReferenceControls = createCardReferenceControls({
         assetURL: path => api.apiURL(path),
         onSettings(settings) {
@@ -965,6 +980,7 @@ function createCardsWorkspace(node) {
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
         pictureRailOpen, batch: null, projectPreviewClips: [], projectPreviewIndex: -1,
+        availableLoras: [], loraCatalogLoaded: false,
     };
     node.longcasterCardsWorkspace = workspace;
     node.graph.longcasterProjectAuthority = node;
@@ -1290,8 +1306,9 @@ function createCardsWorkspace(node) {
             body.append(cardsElement("div", `lc-card-meta lc-render-${item.render_validity}`, `${item.status} · ${item.render_validity} · ${Number(item.actual_duration_seconds ?? item.requested_duration_seconds ?? 0).toFixed(1)}s`));
             button.append(number, body);
             button.onclick = async () => { if (await flush()) { workspace.selectedCardId = item.id; workspace.viewedTakeId = item.selected_draft_take_id || null; render(); } };
-            const copyPrompt = cardsElement("button", "lc-card-copy", "Copy Prompt");
+            const copyPrompt = cardsElement("button", "lc-card-copy", "⧉");
             copyPrompt.title = `Copy Card ${item.timeline_index + 1}'s full prompt`;
+            copyPrompt.setAttribute("aria-label", copyPrompt.title);
             copyPrompt.onclick = async () => {
                 try {
                     await copyTextToClipboard(item.assembled_prompt || "");
@@ -1355,6 +1372,7 @@ function createCardsWorkspace(node) {
         refImageSize.value = card.ref_image_size || "match";
         renderCardReference();
         renderPictureRail(card, take);
+        renderCardLoras(card, isEditable);
         refImageSize.disabled = !isEditable || state.generation_mode !== "ref2va";
         refImageSize.title = state.generation_mode === "ref2va"
             ? "Choose how REF2VA reference images are sized for this card."
@@ -1800,6 +1818,67 @@ function createCardsWorkspace(node) {
         });
     }
 
+    async function loadCardLoraCatalog(showMessage = false) {
+        try {
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/loras"));
+            workspace.availableLoras = [...(body.loras || [])];
+            workspace.loraCatalogLoaded = true;
+            if (workspace.state) renderCardLoras(selectedCard(), editable(selectedCard()));
+            if (showMessage) setMessage(`Found ${workspace.availableLoras.length} installed LoRA${workspace.availableLoras.length === 1 ? "" : "s"}.`);
+            return true;
+        } catch (error) {
+            workspace.loraCatalogLoaded = false;
+            if (showMessage) setMessage(`LoRA list refresh failed: ${error.message}`, true);
+            return false;
+        }
+    }
+
+    function renderCardLoras(card, isEditable) {
+        cardLoraList.replaceChildren();
+        const stack = card?.lora_stack || [];
+        if (!stack.length) {
+            cardLoraList.append(cardsElement("div", "lc-cards-help", "No card LoRAs. The connected graph model remains unchanged."));
+        }
+        stack.forEach((item, index) => {
+            const row = cardsElement("div", "lc-card-lora-row");
+            const enabled = document.createElement("input"); enabled.type = "checkbox"; enabled.checked = item.enabled !== false;
+            enabled.title = "Enable this LoRA and its activation words";
+            const name = document.createElement("select");
+            const choices = workspace.availableLoras.includes(item.lora_name)
+                ? workspace.availableLoras : [item.lora_name, ...workspace.availableLoras].filter(Boolean);
+            if (!choices.length) {
+                const option = document.createElement("option"); option.value = ""; option.textContent = "No installed LoRAs found"; name.append(option);
+            } else {
+                for (const value of choices) {
+                    const option = document.createElement("option"); option.value = value; option.textContent = value; name.append(option);
+                }
+            }
+            name.value = item.lora_name || choices[0] || "";
+            const strength = document.createElement("input"); strength.type = "number"; strength.min = "-100"; strength.max = "100"; strength.step = "0.05"; strength.value = String(item.strength_model ?? 1);
+            strength.title = "Model strength";
+            const words = document.createElement("input"); words.type = "text"; words.maxLength = 2000; words.value = item.activation_words || ""; words.placeholder = "Activation words (optional)";
+            const actions = cardsElement("div", "lc-card-lora-actions");
+            const up = cardsElement("button", "", "↑"); const down = cardsElement("button", "", "↓"); const remove = cardsElement("button", "lc-identity-delete", "Remove");
+            for (const control of [enabled, name, strength, words, up, down, remove]) control.disabled = !isEditable;
+            up.disabled = !isEditable || index === 0; down.disabled = !isEditable || index === stack.length - 1;
+            enabled.onchange = () => { item.enabled = enabled.checked; markDirty(); };
+            name.onchange = () => { item.lora_name = name.value; markDirty(); };
+            strength.oninput = () => { item.strength_model = Number(strength.value); markDirty(); };
+            words.oninput = () => { item.activation_words = words.value; markDirty(); };
+            up.onclick = () => { [stack[index - 1], stack[index]] = [stack[index], stack[index - 1]]; markDirty(); renderCardLoras(card, isEditable); };
+            down.onclick = () => { [stack[index + 1], stack[index]] = [stack[index], stack[index + 1]]; markDirty(); renderCardLoras(card, isEditable); };
+            remove.onclick = () => { stack.splice(index, 1); markDirty(); renderCardLoras(card, isEditable); };
+            actions.append(up, down, remove);
+            row.append(enabled, name, strength, words, actions);
+            cardLoraList.append(row);
+        });
+        addCardLora.disabled = !isEditable || stack.length >= 8 || !workspace.availableLoras.length;
+        addCardLora.title = !workspace.availableLoras.length
+            ? "Refresh after placing LoRAs in ComfyUI/models/loras."
+            : "Add an ordered model-only LoRA to this card.";
+        refreshCardLoras.disabled = Boolean(workspace.state?.pending_operation);
+    }
+
     async function changeCardReference(file) {
         const project = workspace.state.project;
         const cardId = selectedCard()?.id;
@@ -1852,6 +1931,7 @@ function createCardsWorkspace(node) {
             continuation_strategy: card.continuation_strategy,
             color_anchor_source_card_id: card.color_anchor_source_card_id,
             identity_anchor_overrides: card.identity_anchor_overrides || {},
+            lora_stack: card.lora_stack || [],
             refine_enabled: Boolean(card.refine_enabled),
         };
         workspace.dirty = false; workspace.dirtySections.clear();
@@ -1896,6 +1976,7 @@ function createCardsWorkspace(node) {
                 const body = await responseJson(await api.fetchApi(`/longcaster/cards/state?project=${encodeURIComponent(project || "")}`));
                 if (loadEpoch !== workspace.loadEpoch) return false;
                 updateState(body, !workspace.followActive); workspace.followActive = false;
+                if (!workspace.loraCatalogLoaded) await loadCardLoraCatalog();
                 projectSelect.value = body.project; setMessage(body.message || "Project loaded.");
                 return true;
             } catch (error) {
@@ -2607,6 +2688,19 @@ function createCardsWorkspace(node) {
         saveLoraWords.disabled = Boolean(workspace.state?.pending_operation)
             || !workspace.loraDirty;
     };
+    addCardLora.onclick = () => {
+        const card = selectedCard();
+        if (!editable(card) || !workspace.availableLoras.length) return;
+        card.lora_stack ||= [];
+        if (card.lora_stack.length >= 8) return;
+        card.lora_stack.push({
+            lora_name: workspace.availableLoras[0], strength_model: 1.0,
+            activation_words: "", enabled: true,
+        });
+        markDirty();
+        renderCardLoras(card, true);
+    };
+    refreshCardLoras.onclick = () => loadCardLoraCatalog(true);
     saveLoraWords.onclick = () => saveProjectLoraWords();
     identityScope.onchange = () => { customScopeField.hidden = identityScope.value !== "custom"; };
     identityImport.onclick = () => { if (!identityImportInput.disabled) identityImportInput.click(); };

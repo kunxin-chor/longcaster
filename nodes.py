@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
@@ -32,7 +33,12 @@ from .longcaster.mmh3_adapter import (
     primary_latent,
     reference_snapshot,
 )
-from .longcaster.project import ProjectError, ProjectStore, sha256_file
+from .longcaster.project import (
+    ProjectError,
+    ProjectStore,
+    sha256_file,
+    validate_card_lora_stack,
+)
 from .longcaster.prompt_sections import hash_prompt, inject_lora_activation_words
 from .longcaster.preview import encode_project_preview
 from .longcaster.provenance import capture_generation_provenance
@@ -140,6 +146,129 @@ def _model_snapshot(model: Any) -> dict[str, Any]:
         "model_option_keys": sorted(str(key) for key in options) if isinstance(options, dict) else [],
         "patch_key_count": len(patches) if isinstance(patches, dict) else None,
     }
+
+
+def _active_card_lora_stack(card: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        item for item in validate_card_lora_stack(card.get("lora_stack", []))
+        if item["enabled"] and item["strength_model"] != 0.0
+    ]
+
+
+def _card_lora_stack_fingerprint(card: dict[str, Any]) -> str:
+    return generation_fingerprint({"lora_stack": validate_card_lora_stack(card.get("lora_stack", []))})
+
+
+def _validate_card_lora_state(
+    manifest: dict[str, Any], card: dict[str, Any], state: Any, *, label: str = "first-pass"
+) -> list[dict[str, Any]]:
+    active = _active_card_lora_stack(card)
+    if not active:
+        return []
+    if not isinstance(state, dict):
+        raise ProjectError(
+            f"Card {card['timeline_index'] + 1} has enabled LoRAs; connect MiniMax H3 "
+            f"LongCaster Card LoRAs to the {label} MODEL and card_lora_state input"
+        )
+    if state.get("project") != manifest.get("project_name"):
+        raise ProjectError(f"{label} card LoRA state belongs to another project")
+    if state.get("card_id") != card.get("id"):
+        raise ProjectError(f"{label} card LoRA state belongs to another active card")
+    if state.get("stack_fingerprint") != _card_lora_stack_fingerprint(card):
+        raise ProjectError(f"{label} card LoRA state is stale; queue the workflow again")
+    resolved = state.get("resolved_loras")
+    if not isinstance(resolved, list) or len(resolved) != len(active):
+        raise ProjectError(f"{label} card LoRA state is incomplete")
+    for configured, item in zip(active, resolved):
+        if not isinstance(item, dict) or any(
+            item.get(key) != configured[key]
+            for key in ("lora_name", "strength_model", "activation_words", "enabled")
+        ):
+            raise ProjectError(f"{label} card LoRA state does not match the card stack")
+        digest = item.get("asset_sha256")
+        if not isinstance(digest, str) or len(digest) != 64:
+            raise ProjectError(f"{label} card LoRA state has no valid asset hash")
+    return [dict(item) for item in resolved]
+
+
+class LongCasterCardLoras:
+    """Apply the active card's ordered model-only LoRA stack before PDD."""
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {"required": {
+            "model": ("MODEL",),
+            "project_name": ("STRING", {"default": "longcaster_project"}),
+        }}
+
+    RETURN_TYPES = ("MODEL", "LONGCASTER_LORA_STATE")
+    RETURN_NAMES = ("model", "card_lora_state")
+    FUNCTION = "apply"
+    CATEGORY = "MiniMax H3/LongCaster"
+    DESCRIPTION = (
+        "Reads the active LongCaster card, applies its ordered model-only LoRAs, and emits "
+        "a receipt for the LongCaster Project node. Place it before ModelSamplingMiniMaxH3 "
+        "and MiniMax H3 PDD Acc Apply."
+    )
+
+    @classmethod
+    def IS_CHANGED(cls, project_name="", **_kwargs):
+        try:
+            store = ProjectStore(_projects_root(), project_name)
+            manifest = store.load(reconcile=False)
+            card = store.active_card(manifest)
+            files = []
+            for item in _active_card_lora_stack(card):
+                path = Path(folder_paths.get_full_path_or_raise("loras", item["lora_name"]))
+                stat = path.stat()
+                files.append({
+                    "name": item["lora_name"], "size": stat.st_size,
+                    "mtime_ns": stat.st_mtime_ns,
+                    "sha256": sha256_file(path),
+                })
+            return generation_fingerprint({
+                "project": manifest["project_name"], "card_id": card["id"],
+                "stack": validate_card_lora_stack(card.get("lora_stack", [])),
+                "files": files,
+            })
+        except Exception as exc:
+            return f"longcaster-card-lora-error:{type(exc).__name__}:{exc}"
+
+    def apply(self, model, project_name):
+        import comfy.sd
+        import comfy.utils
+
+        store = ProjectStore(_projects_root(), project_name)
+        manifest = store.load()
+        card = store.active_card(manifest)
+        resolved = []
+        patched = model
+        for item in _active_card_lora_stack(card):
+            path = Path(folder_paths.get_full_path_or_raise("loras", item["lora_name"]))
+            lora, metadata = comfy.utils.load_torch_file(
+                str(path), safe_load=True, return_metadata=True
+            )
+            parameters = inspect.signature(comfy.sd.load_lora_for_models).parameters
+            kwargs = {"lora_metadata": metadata} if "lora_metadata" in parameters else {}
+            patched, _unused_clip = comfy.sd.load_lora_for_models(
+                patched, None, lora, item["strength_model"], 0.0, **kwargs
+            )
+            resolved.append({**item, "asset_sha256": sha256_file(path)})
+        state = {
+            "version": 1,
+            "project": manifest["project_name"],
+            "project_revision": manifest["revision"],
+            "card_id": card["id"],
+            "card_number": card["timeline_index"] + 1,
+            "stack_fingerprint": _card_lora_stack_fingerprint(card),
+            "resolved_loras": resolved,
+        }
+        LOGGER.info(
+            "LongCaster card LoRAs card=%d count=%d names=%s",
+            card["timeline_index"] + 1, len(resolved),
+            ",".join(item["lora_name"] for item in resolved) or "none",
+        )
+        return patched, state
 
 
 def _status(manifest: dict[str, Any], store: ProjectStore, message: str) -> dict[str, Any]:
@@ -291,6 +420,8 @@ class LongCasterProject:
                 "reference_packet": ("MMH3_MEDIA",),
                 "refine_sigmas": ("SIGMAS",),
                 "refine_model": ("MODEL",),
+                "card_lora_state": ("LONGCASTER_LORA_STATE",),
+                "refine_card_lora_state": ("LONGCASTER_LORA_STATE",),
             },
             "hidden": {
                 "prompt_graph": "PROMPT",
@@ -343,6 +474,8 @@ class LongCasterProject:
         reference_packet=None,
         refine_sigmas=None,
         refine_model=None,
+        card_lora_state=None,
+        refine_card_lora_state=None,
         prompt_graph=None,
         unique_id=None,
     ):
@@ -442,6 +575,10 @@ class LongCasterProject:
                         seed_mode=refine_seed_mode,
                         cadence=cadence,
                         use_as_default=True,
+                        card_lora_state=(
+                            refine_card_lora_state
+                            if refine_model is not None else card_lora_state
+                        ),
                     )
                     message = (
                         "Draft accepted as an immutable master; continuation refine is ready "
@@ -490,6 +627,10 @@ class LongCasterProject:
                     seed_mode=refine_seed_mode,
                     cadence=cadence,
                     use_as_default=use_as_default,
+                    card_lora_state=(
+                        refine_card_lora_state
+                        if refine_model is not None else card_lora_state
+                    ),
                 )
                 message = (
                     "Continuation refine created and selected for continuation."
@@ -569,6 +710,9 @@ class LongCasterProject:
             raise ProjectError("PDD sampling requires sampler_name=euler")
 
         current = store.active_card(manifest)
+        resolved_card_loras = _validate_card_lora_state(
+            manifest, current, card_lora_state
+        )
         treatment_mode = manifest.get("continuation_treatment", "off")
         if current.get("card_reference") is not None:
             ref_image_size = current.get("ref_image_size", ref_image_size)
@@ -690,7 +834,13 @@ class LongCasterProject:
                     "custom_identity_instruction": item["anchor"].get("custom_identity_instruction"),
                 } for item in identity_references],
             )
-        lora_activation_words = manifest.get("lora_activation_words", "")
+        project_lora_activation_words = manifest.get("lora_activation_words", "")
+        lora_activation_words = "\n".join(
+            item for item in [
+                project_lora_activation_words,
+                *(entry["activation_words"] for entry in resolved_card_loras),
+            ] if item
+        )
         effective_prompt = inject_lora_activation_words(
             effective_prompt, lora_activation_words
         )
@@ -786,6 +936,9 @@ class LongCasterProject:
             "effective_prompt": effective_prompt,
             "effective_prompt_hash": hash_prompt(effective_prompt),
             "lora_activation_words": lora_activation_words,
+            "project_lora_activation_words": project_lora_activation_words,
+            "card_loras": resolved_card_loras,
+            "lora_stack": validate_card_lora_stack(current.get("lora_stack", [])),
             "requested_duration_seconds": float(duration_seconds),
             "duration_plan": duration.__dict__,
             "seed": int(seed),
@@ -968,6 +1121,7 @@ class LongCasterProject:
                 "prompt": prompt,
                 "prompt_hash": hash_prompt(prompt),
                 "prompt_sections": started_card.get("prompt_sections") if started_card.get("prompt_format") == "structured_v1" else None,
+                "card_loras": resolved_card_loras,
                 "seed": int(seed),
                 "generation_fingerprint": fingerprint,
                 "context_frame_count": context_frames,
@@ -987,6 +1141,7 @@ class LongCasterProject:
                 "identity_anchors": identity_diagnostics,
                 "continuation_treatment": treatment_report,
                 "effective_prompt": effective_prompt,
+                "card_loras": resolved_card_loras,
                 "recipe_fingerprint": fingerprint,
             }
             if card_reference is not None:
@@ -1038,11 +1193,19 @@ class LongCasterProject:
         seed_mode: str,
         cadence: str,
         use_as_default: bool,
+        card_lora_state: Any = None,
     ) -> dict[str, Any]:
         card = store.active_card(manifest)
         if card.get("status") != "ACCEPTED":
             raise ProjectError("continuation refine requires the active card to be accepted")
+        resolved_card_loras = _validate_card_lora_state(
+            manifest, card, card_lora_state, label="refine"
+        )
         first_recipe = card.get("recipe") or {}
+        if resolved_card_loras != first_recipe.get("card_loras", []):
+            raise ProjectError(
+                "refine card LoRAs do not match the accepted first-pass recipe"
+            )
         schedule = []
         sigma_error = None
         if refine_sigmas is not None:
@@ -1075,6 +1238,8 @@ class LongCasterProject:
             "seed_mode": str(seed_mode),
             "conditioning": "reconstructed_first_pass",
             "lora_activation_words": first_recipe.get("lora_activation_words", ""),
+            "card_loras": resolved_card_loras,
+            "lora_stack": validate_card_lora_stack(card.get("lora_stack", [])),
             "audio_handling": audio_handling,
         }
         if first_recipe.get("card_reference") is not None:
@@ -1729,6 +1894,7 @@ class LongCasterTimelineExport:
 
 
 NODE_CLASS_MAPPINGS = {
+    "LongCasterCardLoras": LongCasterCardLoras,
     "LongCasterProject": LongCasterProject,
     "LongCasterIdentityAnchor": LongCasterIdentityAnchor,
     "LongCasterRegisterPreview": LongCasterRegisterPreview,
@@ -1737,6 +1903,7 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "LongCasterCardLoras": "MiniMax H3 LongCaster Card LoRAs",
     "LongCasterProject": "MiniMax H3 LongCaster Project",
     "LongCasterIdentityAnchor": "MiniMax H3 LongCaster Identity Anchor",
     "LongCasterRegisterPreview": "MiniMax H3 LongCaster Project Preview",

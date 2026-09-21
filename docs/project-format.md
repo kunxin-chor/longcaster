@@ -27,13 +27,13 @@
 
 ## Manifest
 
-`project.json` schema version 19 contains project-wide fixed settings and a list of cards. Schema 1–18 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, and imported-identity fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 20 contains project-wide fixed settings and a list of cards. Schema 1–19 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `19`. |
+| `schema_version` | Manifest schema, currently `20`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
@@ -66,6 +66,7 @@ Card fields include:
 | `continuation_source_preference` | Default source to select when the next direct-continuation card is appended. |
 | `color_anchor_source_card_id` | User-selectable earlier accepted Color-Stable baseline for a direct continuation. New direct cards inherit the preceding card's choice; fresh independent/Image Restart cards point to themselves. |
 | `identity_anchor_overrides` | Subject ID to `project`, `enabled`, or `disabled`. Missing subjects behave as `project`; the setting is frozen into each successful take. |
+| `lora_stack` | Ordered model-only card LoRAs. Each entry stores `lora_name`, `strength_model`, `activation_words`, and `enabled`; successful takes freeze the authoring stack while the recipe freezes resolved asset hashes. |
 | `refine_enabled` | Manual-mode decision captured while the card is editable; ignored when project refine is Off or Auto. |
 | `derivatives` | Rebuildable refine records; these never replace or mutate the accepted master. |
 | `accepted_publication_id` | Stable UUID of the selected accepted take, or `null`. |

@@ -82,10 +82,21 @@ test("Cards UI invalidates a selected card and its complete tail", () => {
 
 test("every card exposes its full prompt as a clipboard action", () => {
     const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
-    assert.match(source, /"Copy Prompt"/);
+    assert.match(source, /"lc-card-copy", "⧉"/);
+    assert.match(source, /setAttribute\("aria-label", copyPrompt\.title\)/);
     assert.match(source, /copyTextToClipboard\(item\.assembled_prompt \|\| ""\)/);
     assert.match(source, /navigator\?\.clipboard\?\.writeText/);
     assert.match(source, /execCommand\?\.\("copy"\)/);
+});
+
+test("Studio edits ordered per-card LoRAs and synchronizes the patch node", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Card LoRAs/);
+    assert.match(source, /lora_stack: card\.lora_stack \|\| \[\]/);
+    assert.match(source, /\/longcaster\/cards\/loras/);
+    assert.match(source, /LongCasterCardLoras/);
+    assert.match(source, /strength_model/);
+    assert.match(source, /activation_words/);
 });
 
 test("remaining batch plan accepts intermediates and leaves the final draft", () => {

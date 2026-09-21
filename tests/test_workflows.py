@@ -197,6 +197,7 @@ class WorkflowSerializationTests(unittest.TestCase):
             "execution_interrupted", "execution_error", "longcaster_log",
             "Show Execution Log", "Hide Execution Log", "longcaster.executionLogExpanded",
             "LongCasterRegisterPreview", "longcaster_preview", "preview_version",
+            "Card LoRAs", "/longcaster/cards/loras", "lora_stack",
         ):
             self.assertIn(control, source)
 

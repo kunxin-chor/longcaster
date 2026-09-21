@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -28,7 +29,7 @@ from .prompt_sections import (
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
@@ -67,6 +68,47 @@ def validate_lora_activation_words(value: str) -> str:
     if len(words) > 2000:
         raise ProjectError("lora_activation_words cannot exceed 2000 characters")
     return words
+
+
+def validate_card_lora_stack(value: Any) -> list[dict[str, Any]]:
+    """Normalize the ordered, model-only LoRA stack owned by one card."""
+    if not isinstance(value, list):
+        raise ProjectError("card lora_stack must be a list")
+    if len(value) > 8:
+        raise ProjectError("a card can use at most 8 LoRAs")
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ProjectError(f"card LoRA {index + 1} must be an object")
+        name = item.get("lora_name")
+        if not isinstance(name, str):
+            raise ProjectError(f"card LoRA {index + 1} lora_name must be a string")
+        name = name.strip().replace("\\", "/")
+        path = PurePosixPath(name)
+        if (
+            not name or len(name) > 512 or "\x00" in name or path.is_absolute()
+            or ".." in path.parts or ":" in name
+        ):
+            raise ProjectError(f"card LoRA {index + 1} has an invalid lora_name")
+        try:
+            strength = float(item.get("strength_model", 1.0))
+        except (TypeError, ValueError) as exc:
+            raise ProjectError(f"card LoRA {index + 1} strength_model must be numeric") from exc
+        if not math.isfinite(strength) or not -100.0 <= strength <= 100.0:
+            raise ProjectError(
+                f"card LoRA {index + 1} strength_model must be finite and between -100 and 100"
+            )
+        enabled = item.get("enabled", True)
+        if not isinstance(enabled, bool):
+            raise ProjectError(f"card LoRA {index + 1} enabled must be boolean")
+        words = validate_lora_activation_words(item.get("activation_words", ""))
+        normalized.append({
+            "lora_name": name,
+            "strength_model": strength,
+            "activation_words": words,
+            "enabled": enabled,
+        })
+    return normalized
 
 
 def utc_now() -> str:
@@ -186,6 +228,7 @@ def _new_card(
         "continuation_source_preference": "accepted_master",
         "color_anchor_source_card_id": parent_id or card_id,
         "identity_anchor_overrides": {},
+        "lora_stack": [],
         "refine_enabled": False,
         "derivatives": [],
         "reference_set": None,
@@ -236,6 +279,7 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
         "continuation_source": deepcopy(card.get("continuation_source")),
         "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
         "identity_anchor_overrides": deepcopy(card.get("identity_anchor_overrides", {})),
+        "lora_stack": deepcopy(card.get("lora_stack", [])),
         "recipe": deepcopy(card.get("recipe")),
         "generation_fingerprint": card.get("generation_fingerprint"),
         "reference_set": deepcopy(card.get("reference_set")),
@@ -264,6 +308,7 @@ def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
         "continuation_source": deepcopy(take.get("continuation_source")),
         "color_anchor_source_card_id": take.get("color_anchor_source_card_id"),
         "identity_anchor_overrides": deepcopy(take.get("identity_anchor_overrides", {})),
+        "lora_stack": deepcopy(take.get("lora_stack", [])),
         "recipe": deepcopy(take["recipe"]),
         "generation_fingerprint": take["generation_fingerprint"],
         "reference_set": deepcopy(take.get("reference_set")),
@@ -444,6 +489,8 @@ class ProjectStore:
                     raise ProjectError("card reference changed while preparing generation; retry")
                 if reference["enabled"] and manifest["generation_mode"] != "ref2va":
                     raise ProjectError("card references require REF2VA")
+            if validate_card_lora_stack(card.get("lora_stack", [])) != recipe.get("lora_stack", []):
+                raise ProjectError("card LoRA stack changed while preparing generation; retry")
             operation_id = str(uuid.uuid4())
             operation = {
                 "id": operation_id,
@@ -734,6 +781,7 @@ class ProjectStore:
                 "continuation_source_preference": "accepted_master",
                 "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
                 "identity_anchor_overrides": deepcopy(card.get("identity_anchor_overrides", {})),
+                "lora_stack": deepcopy(card.get("lora_stack", [])),
             })
             for publication in history:
                 publication["derivatives"] = []
@@ -2173,6 +2221,7 @@ class ProjectStore:
         continuation_strategy: str | None = None,
         color_anchor_source_card_id: str | None = None,
         identity_anchor_overrides: dict[str, str] | None = None,
+        lora_stack: list[dict[str, Any]] | None = None,
         refine_enabled: bool | None = None,
         convert_legacy: bool = False,
         import_prompt: str | None = None,
@@ -2194,6 +2243,7 @@ class ProjectStore:
                 card.get("ref_image_size"), card.get("continuation_strategy"),
                 deepcopy(card.get("card_reference")), card.get("color_anchor_source_card_id"),
                 deepcopy(card.get("identity_anchor_overrides", {})),
+                deepcopy(card.get("lora_stack", [])),
             )
             if card_reference_settings is not None:
                 from .card_reference import validate_reference
@@ -2326,11 +2376,14 @@ class ProjectStore:
                         )
                     normalized[subject] = value
                 card["identity_anchor_overrides"] = normalized
+            if lora_stack is not None:
+                card["lora_stack"] = validate_card_lora_stack(lora_stack)
             if card["status"] == "DRAFT" and previous_inputs != (
                 card.get("prompt"), card.get("requested_duration_seconds"), card.get("seed"),
                 card.get("ref_image_size"), card.get("continuation_strategy"),
                 card.get("card_reference"), card.get("color_anchor_source_card_id"),
                 card.get("identity_anchor_overrides", {}),
+                card.get("lora_stack", []),
             ):
                 card["draft_inputs_dirty"] = True
             card["updated_at"] = utc_now()
@@ -2526,6 +2579,7 @@ class ProjectStore:
             card["color_anchor_source_card_id"] = current.get(
                 "color_anchor_source_card_id", current["id"]
             )
+            card["lora_stack"] = deepcopy(current.get("lora_stack", []))
             if not prompt:
                 source_sections = (
                     current["prompt_sections"]
@@ -2940,6 +2994,9 @@ class ProjectStore:
                     validate_reference(record.get("card_reference"), card["id"])
                 except (KeyError, TypeError, ValueError) as exc:
                     raise ProjectError(f"invalid card reference: {exc}") from exc
+                stack = record.get("lora_stack", [])
+                if validate_card_lora_stack(stack) != stack:
+                    raise ProjectError("card LoRA stack is not normalized")
             if not isinstance(card.get("draft_inputs_dirty"), bool):
                 raise ProjectError("card draft_inputs_dirty must be boolean")
             if not isinstance(card.get("refine_enabled"), bool):
@@ -3031,7 +3088,7 @@ class ProjectStore:
                         "prompt_hash", "requested_duration_seconds", "seed",
                         "card_reference",
                         "continuation_strategy", "continuation_source",
-                        "color_anchor_source_card_id", "identity_anchor_overrides", "recipe",
+                        "color_anchor_source_card_id", "identity_anchor_overrides", "lora_stack", "recipe",
                         "generation_fingerprint", "reference_set", "context_frame_count",
                         "generated_frame_count", "actual_new_frame_count", "actual_duration_seconds",
                     ):
@@ -3261,7 +3318,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         color_anchors: dict[str, str] = {}
@@ -3287,6 +3344,7 @@ class ProjectStore:
             )
             card.setdefault("derivatives", [])
             card.setdefault("identity_anchor_overrides", {})
+            card.setdefault("lora_stack", [])
             card.setdefault("refine_enabled", False)
             card.setdefault("continuation_source_preference", "accepted_master")
             parent_id = card.get("generation_parent_id")
@@ -3333,6 +3391,7 @@ class ProjectStore:
                 take.setdefault(
                     "identity_anchor_overrides", deepcopy(card["identity_anchor_overrides"])
                 )
+                take.setdefault("lora_stack", deepcopy(card["lora_stack"]))
                 take_recipe = take.get("recipe") or {}
                 take_ref_image_size = (
                     take_recipe.get("ref_image_size") if isinstance(take_recipe, dict) else None

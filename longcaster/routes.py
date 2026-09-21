@@ -164,6 +164,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
                     "ref_image_size", (take.get("recipe") or {}).get("ref_image_size", "match")
                 ),
                 "lora_activation_words": (take.get("recipe") or {}).get("lora_activation_words"),
+                "card_loras": (take.get("recipe") or {}).get("card_loras", []),
                 "continuation_strategy": take.get("continuation_strategy"),
                 "continuation_source": take.get("continuation_source"),
                 "continuation_treatment": (take.get("recipe") or {}).get("continuation_treatment"),
@@ -200,6 +201,7 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "continuation_source": card.get("continuation_source"),
         "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
         "identity_anchor_overrides": card.get("identity_anchor_overrides", {}),
+        "lora_stack": card.get("lora_stack", []),
         "continuation_source_preference": card.get(
             "continuation_source_preference", "accepted_master"
         ),
@@ -506,6 +508,7 @@ async def update_cards_card(request: web.Request) -> web.Response:
             continuation_strategy=payload.get("continuation_strategy"),
             color_anchor_source_card_id=payload.get("color_anchor_source_card_id"),
             identity_anchor_overrides=payload.get("identity_anchor_overrides"),
+            lora_stack=payload.get("lora_stack"),
             refine_enabled=payload.get("refine_enabled"),
             convert_legacy=bool(payload.get("convert_legacy", False)),
             import_prompt=payload.get("import_prompt"),
@@ -513,6 +516,13 @@ async def update_cards_card(request: web.Request) -> web.Response:
         return web.json_response(_cards_state(store, manifest, "Card saved."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
+
+
+async def list_card_loras(_request: web.Request) -> web.Response:
+    try:
+        return web.json_response({"loras": folder_paths.get_filename_list("loras")})
+    except (KeyError, OSError, ValueError) as exc:
+        return _error_response(ProjectError(f"could not list ComfyUI LoRAs: {exc}"))
 
 
 async def invalidate_cards_tail(request: web.Request) -> web.Response:
@@ -866,6 +876,7 @@ def register_routes() -> bool:
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
     instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
+    instance.routes.get("/longcaster/cards/loras")(list_card_loras)
     instance.routes.post("/longcaster/cards/invalidate-tail")(invalidate_cards_tail)
     instance.routes.post("/longcaster/cards/reference")(upload_card_reference)
     instance.routes.delete("/longcaster/cards/reference")(remove_card_reference)
