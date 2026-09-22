@@ -27,19 +27,20 @@
 
 ## Manifest
 
-`project.json` schema version 20 contains project-wide fixed settings and a list of cards. Schema 1–19 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 21 contains project-wide fixed settings and a list of cards. Schema 1–20 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, project prompt-template, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `20`. |
+| `schema_version` | Manifest schema, currently `21`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
 | `refine_cadence` | `off`, `every_accepted_card`, or `manual`. |
 | `continuation_treatment` | Project policy: `off`, `drift_control`, or `color_stable`; migrated projects default to `off`. |
 | `lora_activation_words` | Exact project-wide trigger text injected at runtime into every newly generated card; it does not load or apply a LoRA. |
+| `prompt_templates` | Ordered user-defined `{name, text}` replacements referenced directly as `<name>` in authored prompts. Names are unique ignoring case; native MiniMax reference labels are reserved. |
 | `width`, `height` | Project generation canvas; both values must be multiples of 32. Resolution is editable before the first render or after every card has been invalidated. |
 | `active_card_id` | Stable UUID of the current card. |
 | `cards` | Timeline-ordered card records. |
@@ -101,6 +102,8 @@ Each refine derivative records its UUID, source card/master path and hash, caden
 Generation ancestry and timeline order are separate fields. The UI appends a linear tail. An editable tail may use `direct_mmh3`, which preserves the predecessor's final 39 joint AV latent frames; `image_restart`, which keeps the accepted predecessor as generation parent but uses only its final-frame current-state anchor at target frame 0 with a fresh latent; or `independent`, which clears `generation_parent_id` while retaining `timeline_predecessor_id`. `image_restart` has zero continuation context frames and no latent `continuation_source`.
 
 Structured prompt sections are stored in the fixed order `subject_definitions`, `summary`, `retention_analysis`, `detailed_description`, `overall_soundscape`, and `non_diegetic_music`. Each contains exact `text` plus provenance: `source_type`, nullable `source_card_id`, and `modified_after_copy`. The deterministic assembler in `longcaster/prompt_sections.py` owns the plain labeled format and prompt hash. Runtime state/identity reinforcement creates `effective_prompt` in the generation recipe without mutating these saved user sections.
+
+Project prompt templates are expanded once in the runtime prompt after state/identity reinforcement and before LoRA activation-word injection. Replacement text is not scanned again, so templates cannot recursively invoke one another. Unknown angle-bracket tokens remain literal and are reported to Studio; native `<Subject N>`, `<Picture N>`, `<Video N>`, and `<Audio N>` labels are ignored by template resolution. The generation recipe stores the pre-expansion runtime prompt, expanded prompt, definitions actually used, unresolved names, and a deterministic template hash. Those recipe fields are included in the generation fingerprint and remain immutable with the take.
 
 An ambiguous legacy flat prompt remains byte-for-byte unchanged with `prompt_format=legacy_flat`. Obsolete XML-wrapped prompts are parsed only for migration. Structured prompts are assembled with the six plain `section_name:` headings MiniMax H3 expects. Explicit user conversion safely splits ordered canonical text headings, accepting underscore, space, or hyphen separators; otherwise it puts the full text in `detailed_description`. Conversion replaces the legacy representation only after confirmation.
 

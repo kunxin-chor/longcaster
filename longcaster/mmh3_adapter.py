@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import importlib
+import logging
 import os
 from pathlib import Path
 import sys
-from typing import Any
+from typing import Any, Mapping
 
 
 class MMH3DependencyError(RuntimeError):
@@ -13,6 +14,7 @@ class MMH3DependencyError(RuntimeError):
 
 
 _MMH3_API: Any = None
+LOGGER = logging.getLogger("longcaster.mmh3_adapter")
 
 
 def _looks_like_api(module: Any) -> bool:
@@ -127,10 +129,242 @@ def prepare_continuation(
     return result.latent, result.plan.to_dict()
 
 
+@dataclass(frozen=True)
+class _CompatDiagnostic:
+    severity: str
+    code: str
+    message: str
+    resource_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "severity": self.severity,
+            "code": self.code,
+            "message": self.message,
+            "resource_ids": list(self.resource_ids),
+        }
+
+
+@dataclass(frozen=True)
+class _CompatResource:
+    resource_id: str
+    kind: str
+    order: int | None
+    descriptor: dict[str, Any]
+    enabled: bool
+    purposes: tuple[str, ...]
+    paired_video_resource_id: str | None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.resource_id,
+            "kind": self.kind,
+            "role": "reference",
+            "order": self.order,
+            "path": str(self.descriptor.get("path") or ""),
+            "content": dict(self.descriptor.get("content") or {}),
+            "facts": {
+                "reference_control": {
+                    "enabled": self.enabled,
+                    "purposes": list(self.purposes),
+                }
+            },
+            "usage": "reference",
+        }
+
+
+@dataclass(frozen=True)
+class _CompatPresentation:
+    resource: _CompatResource
+    prompt_tag: str
+    paired_video_resource_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = {"resource": self.resource.to_dict(), "prompt_tag": self.prompt_tag}
+        if self.paired_video_resource_id:
+            value["paired_video_resource_id"] = self.paired_video_resource_id
+        return value
+
+
+@dataclass(frozen=True)
+class _CompatResolvedReferenceSet:
+    resources: tuple[_CompatResource, ...]
+    presentation: tuple[_CompatPresentation, ...]
+    disabled_resources: tuple[_CompatResource, ...]
+    diagnostics: tuple[_CompatDiagnostic, ...]
+
+    @property
+    def ready(self) -> bool:
+        return not any(item.severity == "error" for item in self.diagnostics)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "preset": "all",
+            "ready": self.ready,
+            "resources": [item.to_dict() for item in self.resources],
+            "presentation": [item.to_dict() for item in self.presentation],
+            "disabled_resources": [item.to_dict() for item in self.disabled_resources],
+            "filtered_resources": [],
+            "diagnostics": [item.to_dict() for item in self.diagnostics],
+            "cost": None,
+        }
+
+
+def _h3_reference_contract(descriptor: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    extensions = descriptor.get("extensions")
+    h3 = extensions.get("minimax_h3") if isinstance(extensions, Mapping) else None
+    value = h3.get("reference") if isinstance(h3, Mapping) else None
+    return value if isinstance(value, Mapping) else None
+
+
+def _compat_reference_settings(
+    descriptor: Mapping[str, Any], contract: Mapping[str, Any] | None
+) -> tuple[bool, tuple[str, ...], str | None]:
+    if contract is None:
+        enabled = descriptor.get("enabled", True)
+        purposes = descriptor.get("purposes", ["unknown"])
+        video_id = descriptor.get("video_resource_id")
+    else:
+        if contract.get("contract_version") != 1:
+            raise ValueError(
+                f"H3 reference {descriptor.get('id')!r} has unsupported reference contract version"
+            )
+        enabled = contract.get("enabled", True)
+        purposes = contract.get("purposes")
+        binding = contract.get("binding")
+        video_id = binding.get("video_resource_id") if isinstance(binding, Mapping) else None
+    if not isinstance(enabled, bool):
+        raise ValueError(f"H3 reference {descriptor.get('id')!r} enabled must be boolean")
+    if (
+        isinstance(purposes, (str, bytes)) or not isinstance(purposes, (list, tuple))
+        or not purposes or not all(isinstance(item, str) and item for item in purposes)
+    ):
+        raise ValueError(
+            f"H3 reference {descriptor.get('id')!r} purposes must be a non-empty string array"
+        )
+    if video_id is not None and (descriptor.get("kind") != "audio" or not str(video_id).strip()):
+        raise ValueError(f"H3 reference {descriptor.get('id')!r} has an invalid video binding")
+    return enabled, tuple(dict.fromkeys(purposes)), str(video_id) if video_id is not None else None
+
+
+def _resolve_legacy_reference_set(packet: Any, refs: list[Any]) -> _CompatResolvedReferenceSet:
+    kind_rank = {"image": 0, "video": 1, "audio": 2}
+    resources: list[_CompatResource] = []
+    disabled: list[_CompatResource] = []
+    legacy_ids: list[str] = []
+    for ref in refs:
+        descriptor = dict(ref.descriptor)
+        if not descriptor.get("id"):
+            raise ValueError("H3 reference descriptor has no resource ID")
+        if descriptor.get("kind") not in {"image", "video", "audio"}:
+            raise ValueError(
+                f"H3 reference {descriptor.get('id')!r} has unsupported kind "
+                f"{descriptor.get('kind')!r}"
+            )
+        contract = _h3_reference_contract(descriptor)
+        enabled, purposes, video_id = _compat_reference_settings(descriptor, contract)
+        resource = _CompatResource(
+            resource_id=str(descriptor.get("id") or ""),
+            kind=str(descriptor.get("kind") or ""),
+            order=descriptor.get("order") if isinstance(descriptor.get("order"), int) else None,
+            descriptor=descriptor,
+            enabled=enabled,
+            purposes=purposes,
+            paired_video_resource_id=video_id,
+        )
+        if contract is None:
+            legacy_ids.append(resource.resource_id)
+        (resources if enabled else disabled).append(resource)
+    resources.sort(
+        key=lambda item: (
+            kind_rank.get(item.kind, 99), item.order is None,
+            item.order or 0, item.resource_id,
+        )
+    )
+    disabled.sort(
+        key=lambda item: (
+            kind_rank.get(item.kind, 99), item.order is None,
+            item.order or 0, item.resource_id,
+        )
+    )
+    diagnostics: list[_CompatDiagnostic] = [
+        _CompatDiagnostic(
+            "warning",
+            "legacy_reference_contract_defaulted",
+            "Legacy H3 reference descriptors had no reference contract; "
+            "LongCaster treated them as enabled with purpose 'unknown'.",
+            tuple(legacy_ids),
+        )
+    ]
+    for label, kind, maximum in (
+        ("image reference", "image", 9),
+        ("video reference", "video", 3),
+    ):
+        selected = [item for item in resources if item.kind == kind]
+        if len(selected) > maximum:
+            diagnostics.append(_CompatDiagnostic(
+                "error", "reference_limit_exceeded",
+                f"Selected {len(selected)} {label} resources, but native H3 accepts at most {maximum}.",
+                tuple(item.resource_id for item in selected),
+            ))
+    video_ids = {item.resource_id for item in resources if item.kind == "video"}
+    paired_audio = {
+        item.resource_id for item in resources
+        if item.kind == "audio" and item.paired_video_resource_id in video_ids
+    }
+    standalone_audio = [
+        item for item in resources if item.kind == "audio" and item.resource_id not in paired_audio
+    ]
+    if len(standalone_audio) > 3:
+        diagnostics.append(_CompatDiagnostic(
+            "error", "reference_limit_exceeded",
+            f"Selected {len(standalone_audio)} standalone audio reference resources, "
+            "but native H3 accepts at most 3.",
+            tuple(item.resource_id for item in standalone_audio),
+        ))
+    presentation: list[_CompatPresentation] = []
+    for index, item in enumerate((r for r in resources if r.kind == "image"), start=1):
+        presentation.append(_CompatPresentation(item, f"<Picture {index}>"))
+    audio_index = 0
+    for index, video in enumerate((r for r in resources if r.kind == "video"), start=1):
+        soundtracks = [
+            audio for audio in resources
+            if audio.kind == "audio" and audio.paired_video_resource_id == video.resource_id
+        ]
+        if len(soundtracks) > 1:
+            diagnostics.append(_CompatDiagnostic(
+                "error", "multiple_video_soundtracks",
+                f"video reference order={video.order} has {len(soundtracks)} bound audio "
+                "resources; native H3 accepts one soundtrack per reference video.",
+                tuple(item.resource_id for item in soundtracks),
+            ))
+        for audio in soundtracks:
+            audio_index += 1
+            presentation.append(_CompatPresentation(audio, f"<Audio {audio_index}>", video.resource_id))
+        presentation.append(_CompatPresentation(video, f"<Video {index}>"))
+    for audio in standalone_audio:
+        audio_index += 1
+        presentation.append(_CompatPresentation(audio, f"<Audio {audio_index}>"))
+    LOGGER.warning(
+        "LongCaster applied legacy MMH3 reference compatibility resource_ids=%s",
+        ",".join(legacy_ids),
+    )
+    return _CompatResolvedReferenceSet(
+        tuple(resources), tuple(presentation), tuple(disabled), tuple(diagnostics)
+    )
+
+
+def _resolve_reference_set(packet: Any, **kwargs: Any) -> Any:
+    refs = list(packet.filter_resource_refs(role="reference"))
+    if any(_h3_reference_contract(ref.descriptor) is None for ref in refs):
+        return _resolve_legacy_reference_set(packet, refs)
+    return mmh3_api().resolve_reference_set(packet, **kwargs)
+
+
 def reference_snapshot(packet: Any | None) -> dict[str, Any] | None:
     if packet is None:
         return None
-    resolved = mmh3_api().resolve_reference_set(packet, preset="all")
+    resolved = _resolve_reference_set(packet, preset="all")
     return {
         "packet_id": packet.manifest.get("id"),
         "packet_name": packet.manifest.get("name"),
@@ -165,7 +399,7 @@ def materialize_native_references(
     ref_image_size: str = "match",
 ) -> NativeReferences:
     api = mmh3_api()
-    resolved = api.resolve_reference_set(
+    resolved = _resolve_reference_set(
         packet,
         preset="all",
         target_width=int(width),
@@ -191,13 +425,15 @@ def materialize_native_references(
     videos: dict[str, Any] = {}
     video_audios: dict[str, Any] = {}
     audios: dict[str, Any] = {}
-    h3_references = _h3_reference_module(api)
+    h3_references = None
     for resource in resolved.resources:
         raw = packet.get_by_id(resource.resource_id)
         if resource.kind == "image":
             images[f"ref_image_{len(images)}"] = api.get_resource_payload(packet, raw)
         elif resource.kind == "video":
             index = len(videos)
+            if h3_references is None:
+                h3_references = _h3_reference_module(api)
             materialized = h3_references.materialize_video_reference(
                 packet,
                 resource.resource_id,

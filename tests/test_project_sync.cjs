@@ -99,6 +99,18 @@ test("Studio edits ordered per-card LoRAs and synchronizes the patch node", () =
     assert.match(source, /activation_words/);
 });
 
+test("Project tab edits and previews user-defined prompt templates", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /Project Prompt Templates/);
+    assert.match(source, /Add Template/);
+    assert.match(source, /Save Templates/);
+    assert.match(source, /<lighting>/);
+    assert.match(source, /<sound design>/);
+    assert.match(source, /prompt_templates: requested/);
+    assert.match(source, /Unresolved template tokens/);
+    assert.match(source, /workspace\.templatesDirty/);
+});
+
 test("remaining batch plan accepts intermediates and leaves the final draft", () => {
     const { context } = frontend();
     const state = {

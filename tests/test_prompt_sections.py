@@ -6,6 +6,7 @@ from longcaster.prompt_sections import (
     copy_sections,
     edit_sections,
     empty_prompt_sections,
+    expand_prompt_templates,
     hash_prompt,
     inherited_prompt_sections,
     imported_prompt_sections,
@@ -14,11 +15,34 @@ from longcaster.prompt_sections import (
     parse_legacy_prompt,
     prompt_fields,
     section_record,
+    validate_prompt_templates,
     validate_prompt_sections,
 )
 
 
 class PromptSectionTests(unittest.TestCase):
+    def test_user_prompt_templates_expand_once_and_preserve_native_tokens(self):
+        prompt = "<lighting>\n<sound design>\n<Picture 1>\n<unknown>"
+        expanded, used, unknown = expand_prompt_templates(prompt, [
+            {"name": "lighting", "text": "soft window light"},
+            {"name": "sound design", "text": "rain with <lighting>"},
+        ])
+        self.assertEqual(
+            expanded,
+            "soft window light\nrain with <lighting>\n<Picture 1>\n<unknown>",
+        )
+        self.assertEqual([item["name"] for item in used], ["lighting", "sound design"])
+        self.assertEqual(unknown, ["unknown"])
+
+    def test_prompt_template_validation_rejects_reserved_and_duplicate_names(self):
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            validate_prompt_templates([{"name": "Picture 1", "text": "replacement"}])
+        with self.assertRaisesRegex(ValueError, "unique"):
+            validate_prompt_templates([
+                {"name": "lighting", "text": "one"},
+                {"name": "Lighting", "text": "two"},
+            ])
+
     def test_project_lora_words_are_injected_without_changing_saved_prompt(self):
         prompt = assemble_prompt(empty_prompt_sections())
         injected = inject_lora_activation_words(prompt, "  ohwxPerson, filmStyle  ")

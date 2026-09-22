@@ -10,6 +10,7 @@ from server import PromptServer
 
 from .duplicate import duplicate_project
 from .project import ProjectError, ProjectStore, sha256_file
+from .prompt_sections import expand_prompt_templates
 from .provenance import provenance_for_display
 
 
@@ -111,7 +112,9 @@ def _identity_state(
     }
 
 
-def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
+def _card_summary(
+    card: dict[str, Any], prompt_templates: list[dict[str, str]] | None = None
+) -> dict[str, Any]:
     sections = card.get("prompt_sections") or {}
     summary = (sections.get("summary") or {}).get("text", "")
     title = next((line.strip() for line in summary.splitlines() if line.strip()), "")
@@ -165,6 +168,10 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "lora_activation_words": (take.get("recipe") or {}).get("lora_activation_words"),
                 "card_loras": (take.get("recipe") or {}).get("card_loras", []),
+                "prompt_templates": (take.get("recipe") or {}).get("prompt_templates", []),
+                "prompt_template_hash": (take.get("recipe") or {}).get("prompt_template_hash"),
+                "template_expanded_prompt": (take.get("recipe") or {}).get("template_expanded_prompt"),
+                "unknown_template_tokens": (take.get("recipe") or {}).get("unknown_template_tokens", []),
                 "continuation_strategy": take.get("continuation_strategy"),
                 "continuation_source": take.get("continuation_source"),
                 "continuation_treatment": (take.get("recipe") or {}).get("continuation_treatment"),
@@ -175,6 +182,9 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
                 "identity_anchor_overrides": take.get("identity_anchor_overrides", {}),
             },
         })
+    resolved_prompt, used_templates, unknown_templates = expand_prompt_templates(
+        card.get("assembled_prompt", card.get("prompt", "")), prompt_templates or []
+    )
     return {
         "id": card["id"],
         "timeline_index": card["timeline_index"],
@@ -191,6 +201,9 @@ def _card_summary(card: dict[str, Any]) -> dict[str, Any]:
         "prompt_format": card.get("prompt_format"),
         "prompt_sections": card.get("prompt_sections"),
         "assembled_prompt": card.get("assembled_prompt", card.get("prompt", "")),
+        "resolved_prompt": resolved_prompt,
+        "prompt_templates_used": used_templates,
+        "unknown_template_tokens": unknown_templates,
         "prompt_hash": card.get("prompt_hash"),
         "requested_duration_seconds": card.get("requested_duration_seconds"),
         "actual_duration_seconds": card.get("actual_duration_seconds"),
@@ -290,6 +303,7 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "refine_cadence": manifest.get("refine_cadence", "off"),
         "continuation_treatment": manifest.get("continuation_treatment", "off"),
         "lora_activation_words": manifest.get("lora_activation_words", ""),
+        "prompt_templates": manifest.get("prompt_templates", []),
         "width": manifest["width"],
         "height": manifest["height"],
         "resolution_editable": (
@@ -318,7 +332,10 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
             and not manifest.get("pending_operation")
         ),
         "project_folder": f"output/longcaster_projects/{manifest['project_name']}",
-        "cards": [_card_summary(card) for card in manifest["cards"]],
+        "cards": [
+            _card_summary(card, manifest.get("prompt_templates", []))
+            for card in manifest["cards"]
+        ],
     }
 
 
@@ -365,6 +382,7 @@ async def create_cards_project(request: web.Request) -> web.Response:
             refine_cadence=str(payload.get("refine_cadence", "off")),
             continuation_treatment=str(payload.get("continuation_treatment", "off")),
             lora_activation_words=str(payload.get("lora_activation_words") or ""),
+            prompt_templates=payload.get("prompt_templates"),
         )
         return web.json_response(_cards_state(store, manifest, "Project created."), status=201)
     except (OSError, TypeError, ValueError, ProjectError) as exc:
@@ -407,6 +425,7 @@ async def update_cards_project(request: web.Request) -> web.Response:
             refine_cadence=payload.get("refine_cadence"),
             continuation_treatment=payload.get("continuation_treatment"),
             lora_activation_words=payload.get("lora_activation_words"),
+            prompt_templates=payload.get("prompt_templates"),
             width=payload.get("width"),
             height=payload.get("height"),
         )

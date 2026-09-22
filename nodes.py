@@ -39,7 +39,11 @@ from .longcaster.project import (
     sha256_file,
     validate_card_lora_stack,
 )
-from .longcaster.prompt_sections import hash_prompt, inject_lora_activation_words
+from .longcaster.prompt_sections import (
+    expand_prompt_templates,
+    hash_prompt,
+    inject_lora_activation_words,
+)
 from .longcaster.preview import encode_project_preview
 from .longcaster.provenance import capture_generation_provenance
 from .longcaster.refine import (
@@ -834,6 +838,25 @@ class LongCasterProject:
                     "custom_identity_instruction": item["anchor"].get("custom_identity_instruction"),
                 } for item in identity_references],
             )
+        template_source_prompt = effective_prompt
+        try:
+            template_expanded_prompt, used_prompt_templates, unknown_template_tokens = (
+                expand_prompt_templates(
+                    template_source_prompt, manifest.get("prompt_templates", [])
+                )
+            )
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from exc
+        effective_prompt = template_expanded_prompt
+        if unknown_template_tokens:
+            LOGGER.warning(
+                "LongCaster unresolved prompt template tokens project=%s card=%d tokens=%s",
+                manifest["project_name"], current["timeline_index"] + 1,
+                ",".join(f"<{name}>" for name in unknown_template_tokens),
+            )
+        prompt_template_hash = generation_fingerprint(
+            {"prompt_templates": used_prompt_templates}
+        )
         project_lora_activation_words = manifest.get("lora_activation_words", "")
         lora_activation_words = "\n".join(
             item for item in [
@@ -935,6 +958,11 @@ class LongCasterProject:
             "prompt_hash": hash_prompt(prompt),
             "effective_prompt": effective_prompt,
             "effective_prompt_hash": hash_prompt(effective_prompt),
+            "template_source_prompt": template_source_prompt,
+            "template_expanded_prompt": template_expanded_prompt,
+            "prompt_templates": used_prompt_templates,
+            "prompt_template_hash": prompt_template_hash,
+            "unknown_template_tokens": unknown_template_tokens,
             "lora_activation_words": lora_activation_words,
             "project_lora_activation_words": project_lora_activation_words,
             "card_loras": resolved_card_loras,
@@ -1238,6 +1266,9 @@ class LongCasterProject:
             "seed_mode": str(seed_mode),
             "conditioning": "reconstructed_first_pass",
             "lora_activation_words": first_recipe.get("lora_activation_words", ""),
+            "prompt_templates": first_recipe.get("prompt_templates", []),
+            "prompt_template_hash": first_recipe.get("prompt_template_hash"),
+            "template_expanded_prompt": first_recipe.get("template_expanded_prompt"),
             "card_loras": resolved_card_loras,
             "lora_stack": validate_card_lora_stack(card.get("lora_stack", [])),
             "audio_handling": audio_handling,

@@ -22,14 +22,17 @@ from .prompt_sections import (
     hash_prompt,
     imported_prompt_sections,
     inherited_prompt_sections,
+    expand_prompt_templates,
+    prompt_template_tokens,
     prompt_fields,
     section_record,
+    validate_prompt_templates,
     validate_prompt_sections,
 )
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
 
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
@@ -356,6 +359,7 @@ class ProjectStore:
         refine_cadence: str = "off",
         continuation_treatment: str = "off",
         lora_activation_words: str = "",
+        prompt_templates: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         if generation_mode not in GENERATION_MODES:
             raise ProjectError("generation_mode must be ref2va or t2va")
@@ -368,6 +372,12 @@ class ProjectStore:
         except ValueError as exc:
             raise ProjectError(str(exc)) from exc
         lora_activation_words = validate_lora_activation_words(lora_activation_words)
+        try:
+            prompt_templates = validate_prompt_templates(
+                [] if prompt_templates is None else prompt_templates
+            )
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from exc
         width = int(width)
         height = int(height)
         if not 32 <= width <= 8192 or not 32 <= height <= 8192:
@@ -403,6 +413,7 @@ class ProjectStore:
                 "refine_cadence": refine_cadence,
                 "continuation_treatment": continuation_treatment,
                 "lora_activation_words": lora_activation_words,
+                "prompt_templates": prompt_templates,
                 "width": width,
                 "height": height,
                 "active_card_id": first["id"],
@@ -491,6 +502,15 @@ class ProjectStore:
                     raise ProjectError("card references require REF2VA")
             if validate_card_lora_stack(card.get("lora_stack", [])) != recipe.get("lora_stack", []):
                 raise ProjectError("card LoRA stack changed while preparing generation; retry")
+            try:
+                _expanded, used_templates, _unknown = expand_prompt_templates(
+                    str(recipe.get("template_source_prompt", prompt)),
+                    manifest.get("prompt_templates", []),
+                )
+            except ValueError as exc:
+                raise ProjectError(str(exc)) from exc
+            if used_templates != recipe.get("prompt_templates", []):
+                raise ProjectError("project prompt templates changed while preparing generation; retry")
             operation_id = str(uuid.uuid4())
             operation = {
                 "id": operation_id,
@@ -2398,6 +2418,7 @@ class ProjectStore:
         refine_cadence: str | None = None,
         continuation_treatment: str | None = None,
         lora_activation_words: str | None = None,
+        prompt_templates: list[dict[str, str]] | None = None,
         width: int | None = None,
         height: int | None = None,
     ) -> dict[str, Any]:
@@ -2429,6 +2450,13 @@ class ProjectStore:
                 if lora_activation_words is None
                 else lora_activation_words
             )
+            try:
+                templates = validate_prompt_templates(
+                    manifest.get("prompt_templates", [])
+                    if prompt_templates is None else prompt_templates
+                )
+            except ValueError as exc:
+                raise ProjectError(str(exc)) from exc
             pristine = (
                 len(manifest["cards"]) == 1
                 and manifest["cards"][0]["status"] in {"EMPTY", "FAILED"}
@@ -2485,6 +2513,29 @@ class ProjectStore:
                 if active.get("status") == "DRAFT":
                     active["draft_inputs_dirty"] = True
                     active["updated_at"] = utc_now()
+                changed = True
+            if templates != manifest.get("prompt_templates", []):
+                if manifest.get("pending_operation"):
+                    raise ProjectError(
+                        "cannot change prompt templates while an operation is pending"
+                    )
+                previous = {
+                    item["name"]: item["text"]
+                    for item in validate_prompt_templates(manifest.get("prompt_templates", []))
+                }
+                requested = {item["name"]: item["text"] for item in templates}
+                changed_names = {
+                    name for name in previous.keys() | requested.keys()
+                    if previous.get(name) != requested.get(name)
+                }
+                manifest["prompt_templates"] = templates
+                for card in manifest["cards"]:
+                    if (
+                        card.get("status") == "DRAFT"
+                        and prompt_template_tokens(card.get("prompt", "")) & changed_names
+                    ):
+                        card["draft_inputs_dirty"] = True
+                        card["updated_at"] = utc_now()
                 changed = True
             if changed:
                 manifest["last_operation"] = {
@@ -2880,6 +2931,10 @@ class ProjectStore:
         ):
             raise ProjectError("project width and height must be multiples of 32 between 32 and 8192")
         validate_lora_activation_words(manifest.get("lora_activation_words"))
+        try:
+            validate_prompt_templates(manifest.get("prompt_templates"))
+        except ValueError as exc:
+            raise ProjectError(str(exc)) from exc
         cards = manifest.get("cards")
         if not isinstance(cards, list) or not cards:
             raise ProjectError("project must contain at least one card")
@@ -3318,7 +3373,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         color_anchors: dict[str, str] = {}
@@ -3414,6 +3469,7 @@ class ProjectStore:
         manifest.setdefault("refine_cadence", "off")
         manifest.setdefault("continuation_treatment", "off")
         manifest.setdefault("lora_activation_words", "")
+        manifest.setdefault("prompt_templates", [])
         manifest["schema_version"] = SCHEMA_VERSION
         return True
 

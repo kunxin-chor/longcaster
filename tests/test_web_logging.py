@@ -103,6 +103,21 @@ class WebLoggingTests(unittest.TestCase):
         card.update({"status": "INVALIDATED", "artifact_sha256": None})
         self.assertEqual(self.routes._card_summary(card)["render_validity"], "INVALIDATED")
 
+    def test_card_summary_previews_project_prompt_templates(self):
+        card = {
+            "id": "card-id", "timeline_index": 0, "artifact_number": 1,
+            "status": "EMPTY", "assembled_prompt": "<lighting> and <Picture 1> plus <missing>",
+        }
+        summary = self.routes._card_summary(
+            card, [{"name": "lighting", "text": "soft window light"}]
+        )
+        self.assertEqual(
+            summary["resolved_prompt"],
+            "soft window light and <Picture 1> plus <missing>",
+        )
+        self.assertEqual(summary["prompt_templates_used"][0]["name"], "lighting")
+        self.assertEqual(summary["unknown_template_tokens"], ["missing"])
+
     def test_card_summary_exposes_archived_take_prompt_for_diffing(self):
         card = {
             "id": "card-id", "timeline_index": 0, "artifact_number": 1,

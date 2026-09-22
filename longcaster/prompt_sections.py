@@ -20,6 +20,12 @@ PROMPT_SOURCE_TYPES = {
     "copied_card",
     "generated_internal",
 }
+PROMPT_TEMPLATE_TOKEN_RE = re.compile(r"<([^<>\r\n]{1,80})>")
+_RESERVED_PROMPT_TOKEN_RE = re.compile(
+    r"^(?:subject|picture|video|audio)\s+\d+$", re.IGNORECASE
+)
+MAX_PROMPT_TEMPLATES = 64
+MAX_PROMPT_TEMPLATE_TEXT = 20_000
 
 
 def section_record(
@@ -89,6 +95,94 @@ def hash_prompt(prompt: str) -> str:
     if not isinstance(prompt, str):
         raise ValueError("prompt must be a string")
     return hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+
+def is_reserved_prompt_token(name: str) -> bool:
+    """Return whether an angle-bracket token belongs to MiniMax or legacy prompt syntax."""
+    stripped = str(name).strip()
+    return bool(
+        _RESERVED_PROMPT_TOKEN_RE.fullmatch(stripped)
+        or stripped.lstrip("/").casefold() in PROMPT_SECTION_NAMES
+    )
+
+
+def validate_prompt_templates(value: Any) -> list[dict[str, str]]:
+    """Normalize user-defined project prompt templates without changing their text."""
+    if not isinstance(value, list):
+        raise ValueError("prompt_templates must be a list")
+    if len(value) > MAX_PROMPT_TEMPLATES:
+        raise ValueError(f"a project can define at most {MAX_PROMPT_TEMPLATES} prompt templates")
+    normalized: list[dict[str, str]] = []
+    names: set[str] = set()
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"prompt template {index + 1} must be an object")
+        name = item.get("name")
+        text = item.get("text")
+        if not isinstance(name, str):
+            raise ValueError(f"prompt template {index + 1} name must be a string")
+        name = name.strip()
+        if (
+            not name or len(name) > 80 or "\x00" in name
+            or "<" in name or ">" in name or "\r" in name or "\n" in name
+        ):
+            raise ValueError(f"prompt template {index + 1} has an invalid name")
+        if is_reserved_prompt_token(name):
+            raise ValueError(f"prompt template name <{name}> is reserved")
+        folded = name.casefold()
+        if folded in names:
+            raise ValueError("prompt template names must be unique, ignoring case")
+        names.add(folded)
+        if not isinstance(text, str):
+            raise ValueError(f"prompt template {index + 1} text must be a string")
+        if "\x00" in text:
+            raise ValueError(f"prompt template {index + 1} text cannot contain NUL characters")
+        if len(text) > MAX_PROMPT_TEMPLATE_TEXT:
+            raise ValueError(
+                f"prompt template {index + 1} text cannot exceed "
+                f"{MAX_PROMPT_TEMPLATE_TEXT} characters"
+            )
+        normalized.append({"name": name, "text": text})
+    return normalized
+
+
+def prompt_template_tokens(prompt: str) -> set[str]:
+    if not isinstance(prompt, str):
+        raise ValueError("prompt must be a string")
+    return {
+        match.group(1)
+        for match in PROMPT_TEMPLATE_TOKEN_RE.finditer(prompt)
+        if not is_reserved_prompt_token(match.group(1))
+    }
+
+
+def expand_prompt_templates(
+    prompt: str, templates: Any
+) -> tuple[str, list[dict[str, str]], list[str]]:
+    """Expand configured tokens once and report used definitions and unknown tokens."""
+    if not isinstance(prompt, str):
+        raise ValueError("prompt must be a string")
+    normalized = validate_prompt_templates(templates)
+    by_name = {item["name"]: item for item in normalized}
+    used: list[dict[str, str]] = []
+    used_names: set[str] = set()
+    unknown: list[str] = []
+    unknown_names: set[str] = set()
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        item = by_name.get(name)
+        if item is not None:
+            if name not in used_names:
+                used.append(dict(item))
+                used_names.add(name)
+            return item["text"]
+        if not is_reserved_prompt_token(name) and name not in unknown_names:
+            unknown.append(name)
+            unknown_names.add(name)
+        return match.group(0)
+
+    return PROMPT_TEMPLATE_TOKEN_RE.sub(replace, prompt), used, unknown
 
 
 def inject_lora_activation_words(prompt: str, activation_words: str) -> str:

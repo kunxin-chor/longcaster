@@ -1,30 +1,27 @@
 ---
 name: minimax-h3-longcaster-repository
-description: Navigate and modify the ComfyUI-MiniMax-H3-LongCaster repository, including its ComfyUI nodes, MMH3 persistence, H3 conditioning, PDD sampling, continuity anchors, timeline export, workflows, frontend controls, and tests. Use when investigating, implementing, reviewing, testing, or documenting changes in this repository.
+description: Navigate and modify the ComfyUI-MiniMax-H3-LongCaster repository, including its ComfyUI nodes, MMH3 persistence, H3 conditioning, PDD sampling, continuity anchors, timeline export, frontend controls, and non-workflow tests. Use when investigating, implementing, reviewing, testing, or documenting changes in this repository.
 ---
 
 # MiniMax H3 LongCaster repository guide
 
 Use this file to find the source of truth for a LongCaster task before editing. Read only the files relevant to the change, then check adjacent tests and user documentation.
 
-## Absolute repository write boundary
+## Repository access boundary
 
-Treat the repository directory containing this `SKILL.md` as the absolute boundary for every filesystem mutation.
+The project root is the directory containing the root `__init__.py` file.
 
-- Never create, modify, overwrite, delete, move, rename, or copy files or directories outside this repository.
-- Do not request elevated permissions, create helper scripts, or run commands that would mutate ComfyUI user workflows, output folders, sibling custom nodes, dependency directories, or any other external location.
-- External files may be inspected read-only when needed to diagnose a repository issue. If an external change would be useful, describe the exact manual change to the user without performing it.
-- Before every filesystem mutation, ensure every target is inside this repository. Keep temporary files and generated test artifacts inside the repository as well, and remove them when finished.
+- Files and directories anywhere inside this project root may be listed, searched, read, created, edited, and otherwise accessed without requesting per-file permission or requiring the user to provide each absolute path.
+- Do not access anything outside this project root unless the user gives explicit permission and provides the exact absolute path.
+- Keep temporary files and generated test artifacts inside the project root and remove them when finished.
 
-## Workflow inspection requires an exact user-supplied path
+## Do not access workflows
 
-Do not discover or inspect workflow files unless the user supplies the exact path to each workflow file.
+Do not run or access workflow files, including repository examples and workflow-focused tests.
 
-- Never scan, search, enumerate, glob, or list directories to find workflows.
-- Never infer a workflow path from a name, log, screenshot, active project, recent file, default directory, or nearby workflow.
-- Do not open, parse, summarize, validate, compare, or modify a workflow identified only by a general description such as "the default workflow" or "the example workflows."
-- Treat one supplied path as authorization to inspect only that exact file. Do not inspect sibling workflows or similarly named copies.
-- If work depends on a workflow and its exact path was not supplied, stop that part of the task and ask the user for the exact file path. Continue only work that does not require workflow inspection.
+- Never inspect, enumerate, search, scan, parse, validate, compare, modify, or execute workflows.
+- Do not inspect or run `tests/test_workflows.py` because it reads and validates workflow files.
+- Continue only the parts of a task that do not require workflow access.
 
 ## Establish the current behavior
 
@@ -91,16 +88,9 @@ Preserve these repository-wide contracts unless the requested change explicitly 
 - `web/longcaster.js` adds LongCaster Studio plus ComfyUI project/identity controls. Refer to it for project creation/opening, full-prompt paste/import, full/section synchronization, safe flat conversion, autosave, section-copy UX, card/identity/reference inspection, previews, continuation choice, queue behavior, command IDs, interrupt/unlock behavior, dynamic titles, or widget interactions. Keep validation, assembly, provenance, and state transitions in Python because workflows can run through the API without this frontend.
 - `video_formats/longcaster_nvenc_h264-mp4.json` is the Video Helper Suite encoder profile used by example preview nodes. Refer to it for NVENC codec, preset, CQ, pixel format, metadata, or AAC defaults. Restart ComfyUI after changing or adding a discovered profile.
 
-## Example workflows
+## Workflow files
 
-- `example_workflows/longcaster_pdd_ref2va.json` is the primary production example: REF2VA references, patched PDD `MODEL`, exact external `SIGMAS`, continuity controls, identity-anchor selector, preview output, and disabled timeline export. Refer to it when changing the preferred workflow, serialized widgets, model-loader defaults, or node wiring.
-- `example_workflows/longcaster_pdd_refpatch.json` applies the dedicated MiniMax H3 reference patch to an FL2VA trunk, then pairs it with the FL2VA PDD-ACC heads and exact sigmas. Refer to it when testing the installed `MiniMaxH3RefPatchLoader`, patch strength, or the PDD-integrated model-patch path.
-- `example_workflows/longcaster_hybrid_ref2va.json` is the FL2VA-base/REF2VA-AdaLN model-patch comparison with persistent reference packets and standard sampling. Refer to it when assessing the hybrid patch independently from PDD-ACC or changing the Hybrid Loader contract.
-- `example_workflows/longcaster_standard_t2va.json` is the standard-sampling T2VA baseline without required external PDD sigmas. Refer to it when separating LongCaster bugs from REF2VA, reference, patch, or PDD behavior.
-
-All sample workflows use ComfyUI's built-in `ResolutionSelector` to drive LongCaster width and height. Keep its serialized links covered by `tests/test_workflows.py` when adding or changing examples.
-
-Model filenames in example JSON are editable defaults, not runtime dependencies. When a node gains, removes, or reorders widgets, update both workflows and `tests/test_workflows.py` so ComfyUI does not deserialize values into the wrong fields.
+The repository's example workflows and `tests/test_workflows.py` are outside the permitted task surface. Do not open, inspect, modify, or execute them.
 
 ## Tests
 
@@ -114,16 +104,12 @@ Model filenames in example JSON are editable defaults, not runtime dependencies.
 - `tests/test_refine.py` covers synthetic joint AV mask restoration and exact prefix verification without importing ComfyUI or running a model.
 - `tests/test_refine_project.py` covers refine persistence, immutable masters, fallback, cancellation, source selection, and frozen derivative lineage.
 - `tests/test_timeline.py` covers card selection and continuation-prefix trimming. Run it after timeline or joined-export selection changes.
-- `tests/test_workflows.py` checks serialized workflow widget alignment and required model-loader, resolution-selector, PDD, attention, NVENC, export, and identity-node settings. Run it after changing node schemas or example JSON.
+- Do not inspect or run `tests/test_workflows.py`.
 - `tests/mmh3_backend_smoke.py` is a cross-process, non-GPU integration test for MMH3 save, full verification, restart, direct joint AV continuation, and repacking. Run it with `--mmh3-root PATH_TO_ComfyUI_mmh3_media` after changing continuation or archive integration.
 - `tests/state_anchor_runtime_smoke.py` uses ComfyUI's embedded Python to verify native `minimax_keyframes` composition and current-state PNG persistence. Run it after Stage 2A or native-guide changes.
 - `tests/identity_anchor_runtime_smoke.py` uses ComfyUI's embedded Python to verify historical-frame extraction and composition into native `minimax_refs`. Run it after Stage 2B or reference-conditioning changes.
 
-Run the complete lightweight suite from the repository root with:
-
-```powershell
-python -m unittest discover -s tests -v
-```
+Run only explicitly selected non-workflow tests. Do not use test discovery that would execute `tests/test_workflows.py`.
 
 Use ComfyUI's embedded Python for runtime smoke tests because they import ComfyUI, Torch, and MiniMax H3 modules. Check frontend syntax after editing JavaScript:
 
@@ -135,8 +121,8 @@ node --check web/longcaster.js
 
 - For a controller action that triggers the wrong work, inspect `web/longcaster.js`, the corresponding action branch in `nodes.py`, and transaction handling in `longcaster/project.py`.
 - For models or VAEs loading during Accept, Append, Resume, Cancel, or identity inspection, inspect early returns and output blocking in `nodes.py`, then the frontend action value and command ID in `web/longcaster.js`.
-- For grain, sampling, or PDD differences, inspect workflow wiring, `longcaster/h3_runtime.py`, and `tests/test_workflows.py`; compare against `docs/investigation.md` before changing sampler semantics.
-- For missing or reordered references, inspect the MMH3 Put chain in the REF2VA workflow and `materialize_native_references` in `longcaster/mmh3_adapter.py`. Remember that each media type has its own zero-based order and prompt numbering starts at one.
+- For grain, sampling, or PDD differences, inspect `longcaster/h3_runtime.py` and compare against `docs/investigation.md` before changing sampler semantics.
+- For missing or reordered references, inspect `materialize_native_references` in `longcaster/mmh3_adapter.py`. Remember that each media type has its own zero-based order and prompt numbering starts at one.
 - For visible-state drift between adjacent cards, inspect `longcaster/state_anchor.py`, the anchor orchestration in `nodes.py`, and `tests/test_state_anchor.py` while preserving direct continuation.
 - For facial-identity drift after an occluded card, inspect the identity selector in `nodes.py`, identity persistence in `longcaster/project.py`, and additional image-reference composition in `longcaster/h3_runtime.py`.
 - For identity-picker playback, inspect `longcaster/routes.py`, the `LongCasterRegisterPreview` node in `nodes.py`, and the DOM video controls in `web/longcaster.js`.
@@ -144,7 +130,7 @@ node --check web/longcaster.js
 - For Studio project, identity, reference, or prompt-conversion issues, inspect the `/longcaster/cards/*` route payloads, the matching `ProjectStore` mutation, and the workspace render/event handlers in `web/longcaster.js`.
 - For a project that remains locked, inspect cancellation and pending-operation reconciliation in `longcaster/project.py` together with `stopAndUnlock` in `web/longcaster.js`.
 - For duplicated seam frames, wrong joined duration, or missing cards, inspect `longcaster/timeline.py`, `longcaster/timeline_export.py`, and card frame metadata in `docs/project-format.md`.
-- For a missing custom node or invalid saved widget value, inspect node mappings in `nodes.py`, extension import in `__init__.py`, serialized node types/values in both workflow JSON files, and `tests/test_workflows.py`.
+- For a missing custom node, inspect node mappings in `nodes.py` and extension import in `__init__.py` without accessing workflow files.
 
 ## Keep documentation synchronized
 

@@ -631,7 +631,7 @@ function createCardsWorkspace(node) {
         .lc-cards-editor{min-width:0;overflow:auto;padding:12px;display:grid;align-content:start;gap:10px}.lc-cards-cardhead{display:flex;align-items:center;gap:10px}.lc-cards-cardhead h2{margin:0}.lc-cards-invalidate{margin-left:auto;background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-unpublish{background:#75460f!important;border-color:#c77b27!important}.lc-cards-remove{background:#7b2323!important;border-color:#c84b4b!important}.lc-cards-editing{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}.lc-cards-editing.picture-rail-open{grid-template-columns:minmax(0,1fr) minmax(0,1fr) 180px}.lc-cards-fullpanel,.lc-cards-sectioncolumn{min-width:0;display:grid;align-content:start;gap:7px}.lc-cards-fullbar{display:flex;align-items:center;gap:8px}.lc-cards-fullbar h3{margin:0 auto 0 0}.lc-cards-full{box-sizing:border-box;white-space:pre-wrap;overflow:auto;height:430px;margin:0;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:12px;font:12px ui-monospace,monospace;line-height:1.55}.lc-cards-tabs{display:grid;grid-template-columns:repeat(3,1fr);gap:4px}.lc-cards-tab.active{background:#0968bd;border-color:#1684e6}.lc-cards-section{border:1px solid #223e52;background:#0b1b28;border-radius:7px;padding:12px;display:grid;gap:9px}.lc-cards-sectionbar{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-cards-sectionbar strong{margin-right:auto}.lc-cards-text{width:100%;height:330px;resize:vertical;font:13px ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.55}.lc-cards-import .lc-cards-text{height:250px}.lc-cards-provenance{font-size:11px;color:#94a9b8}.lc-picture-rail{min-width:0;height:430px;overflow:auto;background:#07131d;border:1px solid #223e52;border-radius:7px;padding:8px;box-sizing:border-box}.lc-picture-rail-heading{display:grid;gap:2px;margin-bottom:8px}.lc-picture-rail-heading small{color:#91aabd}.lc-picture-rail-list{display:grid;gap:8px}.lc-picture-tile{display:grid;gap:3px;padding:7px;background:#0d2130;border:1px solid #29465b;border-radius:6px;overflow:hidden}.lc-picture-tile img,.lc-picture-placeholder{width:100%;aspect-ratio:1/1;object-fit:cover;border-radius:4px;background:#02070a}.lc-picture-placeholder{display:grid;place-items:center;color:#718898;font-weight:700}.lc-picture-tile span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.lc-picture-tile small{color:#91aabd;line-height:1.25}.lc-picture-tile.inactive{opacity:.55;border-style:dashed}.lc-picture-toggle.active{background:#0968bd!important;border-color:#1684e6!important}
         .lc-cards-fields{display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:9px}.lc-cards-field{display:grid;gap:4px}.lc-cards-field label{color:#a9bdca}.lc-card-loras{grid-column:1/-1;border:1px solid #29465b;border-radius:6px;padding:9px;display:grid;gap:7px}.lc-card-lora-head{display:flex;align-items:center;gap:8px}.lc-card-lora-head strong{margin-right:auto}.lc-card-lora-list{display:grid;gap:6px}.lc-card-lora-row{display:grid;grid-template-columns:auto minmax(180px,1.4fr) 95px minmax(150px,1fr) auto;gap:6px;align-items:center}.lc-card-lora-row input[type=checkbox]{width:auto}.lc-card-lora-actions{display:flex;gap:4px}.lc-card-lora-actions button{padding:5px 7px}.lc-card-identity-overrides{display:grid;gap:5px}.lc-card-identity-override{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:8px;align-items:center}.lc-card-identity-override span{overflow:hidden;text-overflow:ellipsis}.lc-refine-radios{display:flex;gap:14px;align-items:center;min-height:32px}.lc-refine-radios label,.lc-refine-check{display:flex!important;align-items:center;gap:6px;color:#dce8f3!important}.lc-refine-radios input,.lc-refine-check input{width:auto;padding:0;margin:0}.lc-subject-refine{border:1px solid #29465b;border-radius:5px;padding:8px;display:grid;gap:6px}.lc-subject-refine-title{font-weight:600}.lc-cards-prompt{white-space:pre-wrap;max-height:240px;overflow:auto;background:#07131d;padding:10px;border-radius:5px;font:11px ui-monospace,monospace}.lc-legacy{border-color:#a76b1b;background:#2b2112}.lc-legacy pre{white-space:pre-wrap;max-height:280px;overflow:auto}
         .lc-cards-preview h3{margin:12px 0 8px}.lc-cards-preview h3:first-child{margin-top:4px}.lc-cards-video{width:100%;max-height:280px;background:#02070a;border-radius:6px}.lc-cards-info,.lc-cards-assets{display:grid;gap:7px;margin-top:10px}.lc-cards-info>div,.lc-cards-asset{background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px;word-break:break-word}.lc-cards-asset{display:grid;grid-template-columns:48px 1fr auto;gap:8px;align-items:center}.lc-cards-asset img{width:48px;height:48px;object-fit:cover;border-radius:4px;background:#02070a}.lc-cards-asset small{color:#91aabd}.lc-cards-help{color:#91aabd;font-size:11px;line-height:1.4}.lc-cards-identity-create{display:grid;grid-template-columns:1fr 90px;gap:6px}.lc-cards-identity-create .wide{grid-column:1/-1}.lc-cards-actions{display:flex;gap:8px;margin-left:auto}.lc-cards-execution{display:grid;grid-template-columns:auto minmax(120px,1fr) minmax(160px,320px) auto auto;gap:8px 12px;align-items:center;padding:8px 14px;background:#0a1925;border-top:1px solid #254052}.lc-cards-execution-state{font-weight:700;text-transform:uppercase;color:#91aabd;min-width:86px}.lc-cards-execution-state.running{color:#53aaff}.lc-cards-execution-state.completed{color:#35d181}.lc-cards-execution-state.failed,.lc-cards-execution-state.interrupted{color:#ff7b7b}.lc-cards-execution progress{width:100%;height:14px;accent-color:#1684e6}.lc-cards-execution-stage{color:#b7cbd8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.lc-cards-execution-percent{font:12px ui-monospace,monospace;min-width:46px;text-align:right}.lc-cards-log{grid-column:1/-1;box-sizing:border-box;margin:0;max-height:132px;overflow:auto;white-space:pre-wrap;background:#050d14;border:1px solid #20394b;border-radius:5px;padding:7px 9px;color:#aebfca;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-cards-execution.collapsed .lc-cards-log{display:none}.lc-log-error{color:#ff8a8a}.lc-log-warning{color:#f5bd4d}.lc-cards-footer{display:flex;padding:7px 14px;background:#0c1c29;border-top:1px solid #254052;color:#9bb0bf}.lc-cards-save{margin-left:auto}.lc-cards-error{color:#ff7b7b}.lc-cards-dirty{color:#f5bd4d}@media(max-width:1250px){.lc-cards-main{grid-template-columns:220px 1fr}.lc-cards-preview{display:none}.lc-cards-project{grid-template-columns:1fr}.lc-cards-new{grid-template-columns:repeat(4,1fr)}.lc-cards-editing{grid-template-columns:1fr}}
-        .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}.lc-identity-import{grid-column:1/-1;box-sizing:border-box;min-height:76px;border:2px dashed #31546b;border-radius:7px;display:grid;place-items:center;padding:12px;color:#9fc0d4;background:#081520;cursor:pointer;text-align:center}.lc-identity-import:hover,.lc-identity-import.dragging{border-color:#1684e6;background:#0c2537;color:#d8edfa}.lc-identity-import.disabled{opacity:.5;cursor:not-allowed}.lc-identity-import input{display:none}.lc-identity-import small{display:block;margin-top:4px;color:#7897aa}
+        .lc-cards-asset.in-use{background:#103b2d;border-color:#35b779;box-shadow:inset 4px 0 #35d181}.lc-cards-asset.in-use small{color:#b9ead2}.lc-identity-controls{display:flex;gap:6px;align-items:center}.lc-identity-delete{background:#6f2530!important;border-color:#ba4654!important}.lc-project-lora{display:grid;gap:8px}.lc-project-lora textarea{min-height:90px;resize:vertical;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-project-lora-actions{display:flex;align-items:center;gap:8px}.lc-project-templates{display:grid;gap:8px}.lc-template-list{display:grid;gap:8px}.lc-template-row{display:grid;grid-template-columns:minmax(130px,.45fr) minmax(240px,1fr) auto;gap:7px;align-items:start}.lc-template-row input,.lc-template-row textarea{box-sizing:border-box;width:100%;font:12px ui-monospace,SFMono-Regular,Consolas,monospace}.lc-template-row textarea{min-height:72px;resize:vertical}.lc-template-actions{display:flex;gap:7px;align-items:center;flex-wrap:wrap}.lc-template-preview{max-height:260px;overflow:auto;white-space:pre-wrap;background:#07131d;border:1px solid #223e52;border-radius:5px;padding:9px;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-template-warning{color:#f5bd4d}.lc-identity-import{grid-column:1/-1;box-sizing:border-box;min-height:76px;border:2px dashed #31546b;border-radius:7px;display:grid;place-items:center;padding:12px;color:#9fc0d4;background:#081520;cursor:pointer;text-align:center}.lc-identity-import:hover,.lc-identity-import.dragging{border-color:#1684e6;background:#0c2537;color:#d8edfa}.lc-identity-import.disabled{opacity:.5;cursor:not-allowed}.lc-identity-import input{display:none}.lc-identity-import small{display:block;margin-top:4px;color:#7897aa}
         .lc-project-resolution{display:grid;gap:9px}.lc-project-resolution-fields{display:grid;grid-template-columns:minmax(180px,1fr) minmax(130px,.6fr) minmax(190px,1fr);gap:8px}.lc-project-resolution-fields label{display:grid;gap:4px;color:#a9bdca}.lc-project-resolution-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.lc-project-resolution-lock{color:#f5bd4d}
         .lc-draft-takes{display:grid;gap:6px}.lc-draft-take{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px;align-items:center;background:#0d2130;border:1px solid #223f53;border-radius:5px;padding:8px}.lc-draft-take.selected{background:#103b2d;border-color:#35b779}.lc-draft-take.viewed{box-shadow:inset 3px 0 #1684e6}.lc-draft-take-meta{display:grid;gap:2px;min-width:0}.lc-draft-take-meta small{color:#91aabd}.lc-draft-take-actions{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:5px}.lc-draft-take-actions button{padding:5px 7px}.lc-draft-takes-head{display:flex;align-items:center;gap:8px}.lc-draft-takes-head h3{margin-right:auto}
         .lc-prompt-diff-details{margin-top:8px;border:1px solid #29465b;border-radius:5px;background:#07131d}.lc-prompt-diff-details summary{cursor:pointer;padding:8px;color:#b9cbd7}.lc-prompt-diff{max-height:420px;overflow:auto;border-top:1px solid #223f53;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace}.lc-prompt-diff-row{display:grid;grid-template-columns:42px 42px 18px minmax(0,1fr);white-space:pre-wrap;word-break:break-word;padding:1px 6px}.lc-prompt-diff-row .line-number{color:#607b8d;text-align:right;padding-right:7px;user-select:none}.lc-prompt-diff-row.add{background:#103b2d;color:#c8f2dc}.lc-prompt-diff-row.delete{background:#451f27;color:#ffd0d4}.lc-prompt-diff-empty{padding:9px;color:#91aabd}
@@ -943,6 +943,23 @@ function createCardsWorkspace(node) {
         loraWords,
         loraActions,
     );
+    const templatePanel = cardsElement("section", "lc-project-panel lc-project-templates");
+    const templateList = cardsElement("div", "lc-template-list");
+    const addTemplate = cardsElement("button", "", "Add Template");
+    const saveTemplates = cardsElement("button", "lc-cards-primary", "Save Templates");
+    const templateActions = cardsElement("div", "lc-template-actions");
+    const templateWarnings = cardsElement("div", "lc-template-warning");
+    const templatePreview = cardsElement("pre", "lc-template-preview");
+    templateActions.append(addTemplate, saveTemplates, cardsElement("span", "lc-cards-help", "Use the exact name in prompts, for example <lighting> or <sound design>."));
+    templatePanel.append(
+        cardsElement("h2", "", "Project Prompt Templates"),
+        cardsElement("div", "lc-cards-help", "Define reusable project text. Templates are user-created and expand at generation time without changing saved card prompts. MiniMax reference labels remain reserved."),
+        templateList,
+        templateActions,
+        templateWarnings,
+        cardsElement("h3", "", "Selected Card Resolved Preview"),
+        templatePreview,
+    );
     const promptExportPanel = cardsElement("section", "lc-project-panel");
     const exportProjectPrompts = cardsElement("button", "lc-cards-primary", "Export Project Prompts");
     promptExportPanel.append(
@@ -961,7 +978,7 @@ function createCardsWorkspace(node) {
         playProjectPreview,
         projectPreviewVideo,
     );
-    projectView.append(resolutionPanel, loraPanel, identityPanel, referencePanel, promptExportPanel, projectPreviewPanel);
+    projectView.append(resolutionPanel, loraPanel, templatePanel, identityPanel, referencePanel, promptExportPanel, projectPreviewPanel);
     const footer = cardsElement("div", "lc-cards-footer");
     const message = cardsElement("span", "", "Loading…");
     const saveState = cardsElement("span", "lc-cards-save");
@@ -976,7 +993,7 @@ function createCardsWorkspace(node) {
     const workspace = {
         root, node, state: null, selectedCardId: null, selectedSection: CARD_SECTIONS[0][0],
         dirty: false, dirtySections: new Set(), timer: null, saving: null, editVersion: 0,
-        loraDirty: false,
+        loraDirty: false, templatesDirty: false, templateDraft: [],
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
         pictureRailOpen, batch: null, projectPreviewClips: [], projectPreviewIndex: -1,
@@ -1147,9 +1164,63 @@ function createCardsWorkspace(node) {
         const item = workspace.state?.cards?.find((card) => card.id === cardId);
         return item ? `Card ${item.timeline_index + 1} · ${item.title || "Untitled"} · ${shortId(item.id)}` : "none";
     };
+    const cloneTemplates = (items) => (items || []).map((item) => ({name: item.name || "", text: item.text || ""}));
+    const reservedTemplateName = (name) => /^(?:subject|picture|video|audio)\s+\d+$/i.test(name.trim())
+        || CARD_SECTIONS.some(([sectionName]) => sectionName.toLowerCase() === name.trim().replace(/^\//, "").toLowerCase());
+    const resolveTemplatePreview = (prompt, templates) => {
+        const definitions = new Map(templates.map((item) => [item.name.trim(), item.text]));
+        const unknown = [];
+        const seen = new Set();
+        const resolved = String(prompt || "").replace(/<([^<>\r\n]{1,80})>/g, (token, name) => {
+            if (definitions.has(name)) return definitions.get(name);
+            if (!reservedTemplateName(name) && !seen.has(name)) { unknown.push(name); seen.add(name); }
+            return token;
+        });
+        return {resolved, unknown};
+    };
+    const markTemplatesDirty = () => {
+        workspace.templatesDirty = JSON.stringify(workspace.templateDraft)
+            !== JSON.stringify(cloneTemplates(workspace.state?.prompt_templates));
+        renderSaveState();
+        renderTemplatePreview();
+    };
+    function renderTemplatePreview() {
+        const card = selectedCard();
+        const {resolved, unknown} = resolveTemplatePreview(card?.assembled_prompt || "", workspace.templateDraft);
+        templatePreview.textContent = resolved || "The selected card prompt is empty.";
+        templateWarnings.textContent = unknown.length
+            ? `Unresolved template tokens: ${unknown.map((name) => `<${name}>`).join(", ")}`
+            : "";
+    }
+    function renderProjectTemplates() {
+        templateList.replaceChildren();
+        if (!workspace.templateDraft.length) {
+            templateList.append(cardsElement("div", "lc-cards-help", "No project templates defined."));
+        }
+        workspace.templateDraft.forEach((item, index) => {
+            const row = cardsElement("div", "lc-template-row");
+            const name = document.createElement("input");
+            name.value = item.name; name.maxLength = 80; name.placeholder = "lighting";
+            name.setAttribute("aria-label", `Template ${index + 1} name`);
+            const text = document.createElement("textarea");
+            text.value = item.text; text.maxLength = 20000; text.placeholder = "Reusable prompt text";
+            text.setAttribute("aria-label", `Template ${index + 1} replacement text`);
+            const remove = cardsElement("button", "lc-identity-delete", "Remove");
+            for (const control of [name, text, remove]) control.disabled = Boolean(workspace.state?.pending_operation);
+            name.oninput = () => { item.name = name.value; markTemplatesDirty(); };
+            text.oninput = () => { item.text = text.value; markTemplatesDirty(); };
+            remove.onclick = () => { workspace.templateDraft.splice(index, 1); markTemplatesDirty(); renderProjectTemplates(); };
+            row.append(name, text, remove);
+            templateList.append(row);
+        });
+        addTemplate.disabled = Boolean(workspace.state?.pending_operation) || workspace.templateDraft.length >= 64;
+        saveTemplates.disabled = Boolean(workspace.state?.pending_operation) || !workspace.templatesDirty;
+        renderTemplatePreview();
+    }
     const renderSaveState = () => {
-        saveState.textContent = workspace.saving ? "Saving…" : workspace.dirty ? "Unsaved changes" : `Saved · revision ${workspace.state?.revision ?? "?"}`;
-        saveState.className = `lc-cards-save${workspace.dirty ? " lc-cards-dirty" : ""}`;
+        const dirty = workspace.dirty || workspace.loraDirty || workspace.templatesDirty;
+        saveState.textContent = workspace.saving ? "Saving…" : dirty ? "Unsaved changes" : `Saved · revision ${workspace.state?.revision ?? "?"}`;
+        saveState.className = `lc-cards-save${dirty ? " lc-cards-dirty" : ""}`;
     };
     const renderPromptDiff = (card, take) => {
         promptDiffDetails.hidden = !card || !take;
@@ -1245,6 +1316,10 @@ function createCardsWorkspace(node) {
             || workspace.viewedTakeId === previousCard?.selected_draft_take_id;
         if (workspace.state?.project && workspace.state.project !== state.project) {
             workspace.loraDirty = false;
+            workspace.templatesDirty = false;
+        }
+        if (!workspace.templatesDirty || projectChanged) {
+            workspace.templateDraft = cloneTemplates(state.prompt_templates);
         }
         workspace.state = state;
         if (projectChanged) resetProjectPreview();
@@ -1276,6 +1351,7 @@ function createCardsWorkspace(node) {
         }
         saveLoraWords.disabled = Boolean(state.pending_operation)
             || loraWords.value.trim() === (state.lora_activation_words || "");
+        renderProjectTemplates();
         duplicateProject.disabled = batchActive || Boolean(state.pending_operation);
         duplicateAndInvalidate.disabled = batchActive || Boolean(state.pending_operation);
         exportProjectPrompts.disabled = batchActive || Boolean(state.pending_operation);
@@ -1963,7 +2039,8 @@ function createCardsWorkspace(node) {
     async function flush() {
         if (workspace.referenceBusy) { setMessage("Wait for the card reference upload to finish."); return false; }
         if (!await flushCard()) return false;
-        if (workspace.loraDirty) return saveProjectLoraWords(true);
+        if (workspace.loraDirty && !await saveProjectLoraWords(true)) return false;
+        if (workspace.templatesDirty) return savePromptTemplates(true);
         return true;
     }
     workspace.flush = flush;
@@ -2201,6 +2278,7 @@ function createCardsWorkspace(node) {
             }));
             workspace.selectedCardId = null;
             workspace.loraDirty = false;
+            workspace.templatesDirty = false;
             updateState(body, false);
             await loadProjects(body.project, false);
             projectSelect.value = body.project;
@@ -2312,6 +2390,33 @@ function createCardsWorkspace(node) {
             loraWords.value = workspace.state.lora_activation_words || "";
             setMessage(`LoRA activation update failed: ${error.message}`, true);
             render();
+            return false;
+        }
+    }
+
+    async function savePromptTemplates(cardAlreadyFlushed = false) {
+        if (!cardAlreadyFlushed && !await flushCard()) return false;
+        const requested = cloneTemplates(workspace.templateDraft).map((item) => ({
+            name: item.name.trim(), text: item.text,
+        }));
+        try {
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/project", {
+                method: "PATCH", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    project: workspace.state.project,
+                    revision: workspace.state.revision,
+                    generation_mode: workspace.state.generation_mode,
+                    prompt_templates: requested,
+                }),
+            }));
+            workspace.templatesDirty = false;
+            workspace.templateDraft = cloneTemplates(body.prompt_templates);
+            updateState(body);
+            setMessage(requested.length ? "Project prompt templates saved." : "Project prompt templates cleared.");
+            return true;
+        } catch (error) {
+            setMessage(`Prompt template update failed: ${error.message}`, true);
+            renderProjectTemplates();
             return false;
         }
     }
@@ -2687,7 +2792,16 @@ function createCardsWorkspace(node) {
         workspace.loraDirty = loraWords.value.trim() !== (workspace.state?.lora_activation_words || "");
         saveLoraWords.disabled = Boolean(workspace.state?.pending_operation)
             || !workspace.loraDirty;
+        renderSaveState();
     };
+    addTemplate.onclick = () => {
+        if (workspace.templateDraft.length >= 64 || workspace.state?.pending_operation) return;
+        workspace.templateDraft.push({name: "", text: ""});
+        markTemplatesDirty();
+        renderProjectTemplates();
+        templateList.querySelector(".lc-template-row:last-child input")?.focus();
+    };
+    saveTemplates.onclick = () => savePromptTemplates();
     addCardLora.onclick = () => {
         const card = selectedCard();
         if (!editable(card) || !workspace.availableLoras.length) return;
@@ -2841,7 +2955,7 @@ function createCardsWorkspace(node) {
     });
     projectSelect.onchange = () => workspace.switchProject(projectSelect.value);
     refresh.onclick = async () => { if (await flush()) await loadProjects(); }; close.onclick = async () => { if (await flush()) root.hidden = true; };
-    window.addEventListener("beforeunload", (event) => { if (workspace.dirty) { event.preventDefault(); event.returnValue = ""; } });
+    window.addEventListener("beforeunload", (event) => { if (workspace.dirty || workspace.loraDirty || workspace.templatesDirty) { event.preventDefault(); event.returnValue = ""; } });
     loadProjects();
 }
 
