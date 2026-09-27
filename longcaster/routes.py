@@ -174,6 +174,9 @@ def _card_summary(
                 "unknown_template_tokens": (take.get("recipe") or {}).get("unknown_template_tokens", []),
                 "continuation_strategy": take.get("continuation_strategy"),
                 "continuation_source": take.get("continuation_source"),
+                "hyperflow_continuation_compensation": (take.get("recipe") or {}).get(
+                    "hyperflow_continuation_compensation"
+                ),
                 "continuation_treatment": (take.get("recipe") or {}).get("continuation_treatment"),
                 "references": take.get("reference_set"),
                 "card_reference": (take.get("recipe") or {}).get("card_reference"),

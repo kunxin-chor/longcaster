@@ -95,8 +95,11 @@ class StateAnchorTests(unittest.TestCase):
         self.assertIn(CONTINUITY_INSTRUCTION, updated)
         self.assertIn(identity_instruction("<Subject 1>", 3), updated)
 
-    def test_identity_scope_is_first_in_retention_analysis_only(self):
-        prompt = "summary:\nWalk out of the pool.\n\nretention_analysis:\nKeep wet hair."
+    def test_identity_scope_is_first_in_subject_definitions_only(self):
+        prompt = (
+            "subject_definitions:\n<Subject 1> is a swimmer.\n\n"
+            "summary:\nWalk out of the pool.\n\nretention_analysis:\nKeep wet hair."
+        )
         instruction = identity_instruction("<Subject 1>", 3, "face_only")
         updated, injected, sections = reinforce_prompt(
             prompt,
@@ -106,14 +109,15 @@ class StateAnchorTests(unittest.TestCase):
             identity_scope="face_only",
         )
         self.assertTrue(injected)
-        retention = updated.split("retention_analysis:", 1)[1]
-        self.assertTrue(retention.lstrip().startswith(instruction))
-        self.assertNotIn(instruction, updated.split("retention_analysis:", 1)[0])
-        self.assertEqual(sections, ["summary", "retention_analysis"])
+        subjects = updated.split("subject_definitions:", 1)[1].split("summary:", 1)[0]
+        self.assertTrue(subjects.lstrip().startswith(instruction))
+        self.assertNotIn(instruction, updated.split("retention_analysis:", 1)[1])
+        self.assertEqual(sections, ["subject_definitions", "summary", "retention_analysis"])
 
     def test_identity_scope_instructions_limit_unwanted_attributes(self):
         face = identity_instruction("<Subject 1>", 3, "face_only")
-        self.assertIn("Do not copy its pose", face)
+        self.assertIn("not a target frame, keyframe, pose, expression, or motion reference", face)
+        self.assertIn("requested head turns", face)
         self.assertIn("hair condition", face)
         self.assertIn("clothing", face)
         body = identity_instruction("<Subject 1>", 3, "face_body")

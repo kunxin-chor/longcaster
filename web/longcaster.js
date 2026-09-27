@@ -133,8 +133,8 @@ async function queueAction(node, action) {
     if (authority) repairContinuationTreatmentWidgetOrder(authority);
     const workspace = authority?.longcasterCardsWorkspace;
     if (workspace && action !== "cancel") {
-        if (workspace.loading && !await workspace.loading) return;
-        if (!await workspace.flush()) return;
+        if (workspace.loading && !await workspace.loading) return null;
+        if (!await workspace.flush()) return null;
         if (workspace.state) syncProjectNode(authority, workspace.state);
     }
     if (authority && authority !== node) {
@@ -609,6 +609,13 @@ function differentRandomSeed(currentSeed) {
     return candidate;
 }
 
+function differentUnusedSeed(currentSeed, usedSeeds) {
+    let candidate = differentRandomSeed(currentSeed);
+    while (usedSeeds.has(candidate)) candidate = (candidate + 1) >>> 0;
+    usedSeeds.add(candidate);
+    return candidate;
+}
+
 function createCardsWorkspace(node) {
     if (node.longcasterCardsWorkspace) {
         node.longcasterCardsWorkspace.root.hidden = false;
@@ -651,12 +658,18 @@ function createCardsWorkspace(node) {
     const projectPath = cardsElement("span", "lc-cards-projectpath");
     const actions = cardsElement("div", "lc-cards-actions");
     const generate = cardsElement("button", "lc-cards-primary", "Generate Draft");
+    const draftCount = document.createElement("input");
+    draftCount.type = "number"; draftCount.min = "1"; draftCount.max = "100"; draftCount.step = "1"; draftCount.value = "1";
+    draftCount.style.width = "64px"; draftCount.title = "Number of drafts to queue (1–100)";
+    draftCount.setAttribute("aria-label", "Draft count");
+    const queueDrafts = cardsElement("button", "lc-cards-primary", "Queue Drafts");
+    queueDrafts.title = "Generate the selected number of draft takes with different seeds. Keep Studio open until all takes finish.";
     const retry = cardsElement("button", "", "Retry Draft");
     const retryDifferentSeed = cardsElement("button", "", "Retry Draft with Different Seed");
     const accept = cardsElement("button", "lc-cards-accept", "Accept Draft");
     const batchRender = cardsElement("button", "lc-cards-primary", "Render Remaining Drafts");
     const append = cardsElement("button", "lc-cards-primary", "Append Card");
-    actions.append(generate, retry, retryDifferentSeed, accept, batchRender, append);
+    actions.append(generate, draftCount, queueDrafts, retry, retryDifferentSeed, accept, batchRender, append);
     const stop = cardsElement("button", "lc-cards-danger", "Stop Generation / Unlock");
     const close = cardsElement("button", "lc-cards-close", "Close");
     top.append(projectSelect, refresh, newProject, duplicateProject, projectPath, actions, stop, close);
@@ -996,7 +1009,7 @@ function createCardsWorkspace(node) {
         loraDirty: false, templatesDirty: false, templateDraft: [],
         followActive: false, loadEpoch: 0, projectListEpoch: 0, importCardId: null,
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
-        pictureRailOpen, batch: null, projectPreviewClips: [], projectPreviewIndex: -1,
+        pictureRailOpen, batch: null, draftBatch: null, projectPreviewClips: [], projectPreviewIndex: -1,
         availableLoras: [], loraCatalogLoaded: false,
     };
     node.longcasterCardsWorkspace = workspace;
@@ -1131,6 +1144,7 @@ function createCardsWorkspace(node) {
         execution.render("Completed", `${execution.action || "LongCaster"} completed`, 1, 1);
         execution.append("info", "Execution completed.");
         workspace.advanceBatch?.(completedAction);
+        workspace.advanceDraftBatch?.(completedAction);
     });
     listen("execution_interrupted", (detail) => {
         if (!execution.accepts(detail)) return;
@@ -1139,6 +1153,7 @@ function createCardsWorkspace(node) {
         execution.render("Interrupted", label);
         execution.append("warning", label);
         workspace.cancelBatch?.("Batch rendering stopped after interruption.", true);
+        workspace.cancelDraftBatch?.("Draft queue stopped after interruption.", true);
     });
     listen("execution_error", (detail) => {
         if (!execution.accepts(detail)) return;
@@ -1150,12 +1165,14 @@ function createCardsWorkspace(node) {
         const traceback = Array.isArray(detail.traceback) ? detail.traceback.join("") : detail.traceback;
         if (traceback) execution.append("error", traceback);
         workspace.cancelBatch?.("Batch rendering stopped after an execution error.", true);
+        workspace.cancelDraftBatch?.("Draft queue stopped after an execution error.", true);
     });
     listen("longcaster_log", (detail) => {
         if (execution.active) execution.append(detail.level || "info", detail.message, detail.timestamp);
     });
     stop.onclick = () => {
         workspace.cancelBatch?.("Batch rendering cancelled.", true);
+        workspace.cancelDraftBatch?.("Draft queue cancelled.", true);
         stopAndUnlock(node);
     };
 
@@ -1339,7 +1356,7 @@ function createCardsWorkspace(node) {
         const state = workspace.state;
         if (!state) return;
         const card = selectedCard();
-        const batchActive = Boolean(workspace.batch?.active);
+        const batchActive = Boolean(workspace.batch?.active || workspace.draftBatch?.active);
         const showingCard = workspace.activeView === "card";
         main.hidden = !showingCard;
         projectView.hidden = showingCard;
@@ -1397,7 +1414,7 @@ function createCardsWorkspace(node) {
             list.append(row);
         }
         if (!card) return;
-        const isEditable = editable(card);
+        const isEditable = editable(card) && !workspace.draftBatch?.active;
         let take = viewedTake(card);
         if (!take && card.selected_draft_take_id) {
             workspace.viewedTakeId = card.selected_draft_take_id;
@@ -1406,8 +1423,8 @@ function createCardsWorkspace(node) {
         cardTitle.textContent = `Card ${card.timeline_index + 1}`;
         cardStatus.textContent = `${card.status} · ${card.render_validity} · ${card.id}`;
         cardStatus.className = `lc-render-${card.render_validity}`;
-        previousCard.disabled = card.timeline_index < 1;
-        nextCard.disabled = card.timeline_index >= state.cards.length - 1;
+        previousCard.disabled = batchActive || card.timeline_index < 1;
+        nextCard.disabled = batchActive || card.timeline_index >= state.cards.length - 1;
         tabs.replaceChildren();
         for (const [name, label] of CARD_SECTIONS) {
             const button = cardsElement("button", `lc-cards-tab${workspace.selectedSection === name ? " active" : ""}`, label);
@@ -1514,17 +1531,19 @@ function createCardsWorkspace(node) {
         strategy.value = card.continuation_strategy || "independent";
         strategy.disabled = !isEditable || !card.timeline_predecessor_id;
         generate.disabled = batchActive || card.id !== state.active_card_id || !["EMPTY", "FAILED", "INVALIDATED"].includes(card.status) || Boolean(state.pending_operation);
+        queueDrafts.disabled = generate.disabled;
+        draftCount.disabled = batchActive;
         retry.disabled = batchActive || card.id !== state.active_card_id || card.status !== "DRAFT" || Boolean(state.pending_operation);
         retryDifferentSeed.disabled = retry.disabled;
-        retryDifferentSeed.title = "Assign and save a new random seed, then retry this draft.";
+        retryDifferentSeed.title = "Assign a different seed for each retry; use Draft count for multiple takes and keep Studio open.";
         accept.disabled = batchActive || card.id !== state.active_card_id || card.status !== "DRAFT" || card.draft_inputs_dirty || Boolean(state.pending_operation) || Boolean(take && !take.selected);
         accept.title = take && !take.selected ? "Select the take you are viewing before accepting it." : "Accept the selected draft take.";
         const batchPlan = remainingBatchPlan(state);
-        batchRender.textContent = batchActive
+        batchRender.textContent = workspace.batch?.active
             ? "Cancel Batch After Current Step"
             : `Render Remaining Drafts${batchPlan ? ` (${batchPlan.renderCount})` : ""}`;
-        batchRender.disabled = !batchActive && (!batchPlan || Boolean(state.pending_operation));
-        batchRender.title = batchActive
+        batchRender.disabled = Boolean(workspace.draftBatch?.active) || (!workspace.batch?.active && (!batchPlan || Boolean(state.pending_operation)));
+        batchRender.title = workspace.batch?.active
             ? "Stop automatically queueing cards after the current Generate or Accept operation finishes."
             : batchPlan
                 ? "Generate the remaining invalidated cards in order, automatically accepting intermediates and leaving the final card as a draft."
@@ -1811,6 +1830,24 @@ function createCardsWorkspace(node) {
             });
             packet = linkedSource(packet, "packet");
         }
+        const directResources = (packet?.inputs || []).flatMap((input) => {
+            const match = /^(image|video|audio)_(\d+)$/.exec(String(input.name || ""));
+            if (!match) return [];
+            const resourceNode = linkedSource(packet, input.name);
+            if (!resourceNode) return [];
+            const kind = match[1];
+            return [{
+                kind,
+                index: Number(match[2]),
+                role: "reference",
+                name: String(resourceNode.title || resourceNode.type || `${kind} ${Number(match[2]) + 1}`),
+                filename: kind === "image" ? String(widget(resourceNode, "image")?.value || "") : "",
+            }];
+        }).sort((left, right) => {
+            const rank = {image: 0, video: 1, audio: 2};
+            return rank[left.kind] - rank[right.kind] || left.index - right.index;
+        });
+        resources.unshift(...directResources);
         return {packetName, resources};
     }
 
@@ -1835,13 +1872,18 @@ function createCardsWorkspace(node) {
             : (useFrozen || !live.resources.length ? frozenResources : live.resources);
         const livePictures = live.resources.filter(item => item.kind === "image");
         const globalPictures = globalSource.filter(item => item.kind === "image").map((item, index) => {
-            const liveItem = !useFrozen ? livePictures[index] : null;
+            const liveItem = livePictures[index];
             const thumbnail = liveItem?.filename
                 ? api.apiURL(`/view?${new URLSearchParams({filename: liveItem.filename, type: "input"})}`)
                 : null;
+            const frozenId = shortId(item.id);
             return {
                 label: item.name || item.role || `Project Picture ${index + 1}`,
-                detail: thumbnail ? "project packet" : `project packet · ${shortId(item.id)}`,
+                detail: useFrozen
+                    ? thumbnail
+                        ? `current graph preview · frozen ${frozenId}`
+                        : `frozen resource ${frozenId} · thumbnail unavailable`
+                    : thumbnail ? "connected project packet" : `project packet · ${frozenId}`,
                 thumbnail,
             };
         });
@@ -1890,7 +1932,9 @@ function createCardsWorkspace(node) {
         editing.classList.toggle("picture-rail-open", workspace.pictureRailOpen);
         pictureRail.render(result, {
             open: workspace.pictureRailOpen,
-            sourceNote: useFrozen ? "frozen take" : live.resources.length ? "connected graph" : "last snapshot",
+            sourceNote: useFrozen
+                ? livePictures.some(item => item.filename) ? "frozen take · current graph preview" : "frozen take"
+                : live.resources.length ? "connected graph" : "last snapshot",
         });
     }
 
@@ -2089,6 +2133,104 @@ function createCardsWorkspace(node) {
     }
     workspace.cancelBatch = cancelBatch;
 
+    function cancelDraftBatch(message = "Draft queue cancelled.", error = false) {
+        if (!workspace.draftBatch?.active) return false;
+        workspace.draftBatch.active = false;
+        workspace.draftBatch = null;
+        setMessage(message, error);
+        render();
+        return true;
+    }
+    workspace.cancelDraftBatch = cancelDraftBatch;
+
+    function requestedDraftCount() {
+        const count = Number(draftCount.value);
+        if (!Number.isInteger(count) || count < 1 || count > 100) {
+            setMessage("Draft count must be a whole number from 1 to 100.", true);
+            draftCount.focus();
+            return null;
+        }
+        return count;
+    }
+
+    async function queueDraftStep() {
+        const batch = workspace.draftBatch;
+        if (!batch?.active) return;
+        const card = selectedCard();
+        if (workspace.state?.project !== batch.project || card?.id !== batch.cardId) {
+            cancelDraftBatch("Draft queue stopped because the active card changed.", true);
+            return;
+        }
+        if (batch.completed > 0 && card.status !== "DRAFT") {
+            cancelDraftBatch("Draft queue stopped because the previous take is unavailable.", true);
+            return;
+        }
+        const action = batch.completed === 0 ? batch.firstAction : "retry";
+        const nextSeed = differentUnusedSeed(card.seed, batch.usedSeeds);
+        card.seed = nextSeed;
+        seed.value = String(nextSeed);
+        markDirty();
+        if (!await flush()) {
+            cancelDraftBatch("Draft queue stopped because its seed could not be saved.", true);
+            return;
+        }
+        if (!batch.active) return;
+        batch.expectedAction = action;
+        setMessage(`Queueing draft ${batch.completed + 1} of ${batch.count} with seed ${nextSeed}…`);
+        const queued = await queueAction(node, action);
+        if (queued === null) cancelDraftBatch("Draft queue stopped because the next take could not be queued.", true);
+    }
+
+    async function advanceDraftBatch(completedAction) {
+        const batch = workspace.draftBatch;
+        if (!batch?.active || batch.advancing || completedAction !== batch.expectedAction) return;
+        batch.advancing = true;
+        try {
+            if (!await load(batch.project) || !batch.active) {
+                cancelDraftBatch("Draft queue stopped because the project could not be refreshed.", true);
+                return;
+            }
+            const card = selectedCard();
+            if (card?.id !== batch.cardId || card.status !== "DRAFT" || card.draft_inputs_dirty) {
+                cancelDraftBatch("Draft queue stopped because the draft was not saved correctly.", true);
+                return;
+            }
+            batch.completed += 1;
+            if (batch.completed === batch.count) {
+                workspace.draftBatch = null;
+                setMessage(`Queued and completed ${batch.count} draft${batch.count === 1 ? "" : "s"}. Review the saved takes.`);
+                render();
+                return;
+            }
+            await queueDraftStep();
+        } catch (error) {
+            cancelDraftBatch(`Draft queue stopped: ${error.message}`, true);
+        } finally {
+            if (workspace.draftBatch === batch) batch.advancing = false;
+        }
+    }
+    workspace.advanceDraftBatch = advanceDraftBatch;
+
+    async function startDraftBatch(firstAction) {
+        if (workspace.draftBatch?.active || workspace.batch?.active) return;
+        const count = requestedDraftCount();
+        if (count === null || !await flush()) return;
+        const card = selectedCard();
+        if (!card || card.id !== workspace.state.active_card_id || workspace.state.pending_operation
+            || (firstAction === "generate" ? !["EMPTY", "FAILED", "INVALIDATED"].includes(card.status) : card.status !== "DRAFT")) {
+            setMessage("This card is not ready to queue drafts.", true);
+            return;
+        }
+        workspace.draftBatch = {
+            active: true, advancing: false, project: workspace.state.project, cardId: card.id,
+            firstAction, count, completed: 0, expectedAction: null,
+            usedSeeds: new Set([Number(card.seed), ...(card.draft_takes || []).map((take) => Number(take.seed))]),
+        };
+        render();
+        try { await queueDraftStep(); }
+        catch (error) { cancelDraftBatch(`Draft queue stopped: ${error.message}`, true); }
+    }
+
     async function queueBatchStep(action) {
         const batch = workspace.batch;
         if (!batch?.active) return false;
@@ -2194,6 +2336,7 @@ function createCardsWorkspace(node) {
 
     workspace.switchProject = async (project) => {
         cancelBatch("Batch rendering cancelled because the project changed.");
+        cancelDraftBatch("Draft queue cancelled because the project changed.");
         if (!await flush()) {
             if (workspace.state) {
                 syncProjectNode(node, workspace.state);
@@ -2721,6 +2864,9 @@ function createCardsWorkspace(node) {
     function retryWithDifferentSeed() {
         const card = selectedCard();
         if (!card || card.status !== "DRAFT") return;
+        const count = requestedDraftCount();
+        if (count === null) return;
+        if (count > 1) { startDraftBatch("retry"); return; }
         const nextSeed = differentRandomSeed(card.seed);
         card.seed = nextSeed;
         seed.value = String(nextSeed);
@@ -2877,7 +3023,13 @@ function createCardsWorkspace(node) {
         identityFrame.value = "0";
         renderIdentitySource();
     };
-    generate.onclick = () => runAction("generate");
+    generate.onclick = () => {
+        const count = requestedDraftCount();
+        if (count === null) return;
+        if (count > 1) startDraftBatch("generate");
+        else runAction("generate");
+    };
+    queueDrafts.onclick = () => startDraftBatch("generate");
     retry.onclick = () => runAction("retry");
     retryDifferentSeed.onclick = () => retryWithDifferentSeed();
     accept.onclick = () => runAction("accept");
@@ -2954,7 +3106,7 @@ function createCardsWorkspace(node) {
         projectPreviewStatus.textContent = `Could not play Card ${clip?.cardNumber ?? "?"}'s selected preview.`;
     });
     projectSelect.onchange = () => workspace.switchProject(projectSelect.value);
-    refresh.onclick = async () => { if (await flush()) await loadProjects(); }; close.onclick = async () => { if (await flush()) root.hidden = true; };
+    refresh.onclick = async () => { if (await flush()) await loadProjects(); }; close.onclick = async () => { if (await flush()) { cancelDraftBatch("Draft queue stopped because the interface closed."); root.hidden = true; } };
     window.addEventListener("beforeunload", (event) => { if (workspace.dirty || workspace.loraDirty || workspace.templatesDirty) { event.preventDefault(); event.returnValue = ""; } });
     loadProjects();
 }

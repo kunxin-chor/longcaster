@@ -398,27 +398,38 @@ def identity_instruction(
     scope, custom = validate_identity_scope(identity_scope, custom_identity_instruction or "")
     picture = f"<Picture {int(picture_index)}>"
     if scope == "custom":
-        return f"For {subject_id}, interpret identity anchor {picture} as follows: {custom}"
+        return (
+            f"{subject_id} is the referenced subject in {picture}. "
+            f"Use that source for this subject as follows: {custom}"
+        )
     if scope == "face_only":
         return (
-            f"Use identity anchor {picture} only for {subject_id}'s facial identity and facial proportions. "
-            "Do not copy its pose, expression, hairstyle or hair condition, body, clothing, logos, "
-            "accessories, lighting, or background."
+            f"{subject_id}'s facial identity and facial proportions come from {picture}. "
+            "The picture identifies the subject only; it is not a target frame, keyframe, pose, expression, "
+            "or motion reference. Preserve all requested head turns, facial motion, body motion, and camera "
+            "motion. Do not copy its hairstyle or hair condition, body, clothing, logos, accessories, "
+            "lighting, or background."
         )
     if scope == "face_clothing":
         return (
-            f"Use identity anchor {picture} only for {subject_id}'s facial identity and clothing design. "
-            "Do not copy its pose, expression, hairstyle or hair condition, body pose, lighting, or background."
+            f"{subject_id}'s facial identity and clothing design come from {picture}. "
+            "The picture identifies the subject and clothing only; it is not a target frame, keyframe, pose, "
+            "expression, or motion reference. Preserve all requested head turns, facial motion, body motion, "
+            "and camera motion. Do not copy its hairstyle or hair condition, body pose, lighting, or background."
         )
     if scope == "face_body":
         return (
-            f"Use identity anchor {picture} for {subject_id}'s facial identity, body proportions, and visible "
-            "body details such as tattoos, scars, and wounds. Do not copy its pose, expression, hairstyle or "
-            "hair condition, clothing, logos, accessories, lighting, or background."
+            f"{subject_id}'s facial identity, body proportions, and visible body details such as tattoos, "
+            f"scars, and wounds come from {picture}. The picture identifies the subject only; it is not a "
+            "target frame, keyframe, pose, expression, or motion reference. Preserve all requested head turns, "
+            "facial motion, body motion, and camera motion. Do not copy its hairstyle or hair condition, "
+            "clothing, logos, accessories, lighting, or background."
         )
     return (
-        f"Use identity anchor {picture} for {subject_id}'s full visible appearance, including face, hair, body, "
-        "clothing, and accessories. Do not copy its pose, camera composition, lighting, or background."
+        f"{subject_id}'s full visible appearance, including face, hair, body, clothing, and accessories, comes "
+        f"from {picture}. The picture identifies the subject only; it is not a target frame, keyframe, pose, "
+        "or motion reference. Preserve all requested head turns, facial motion, body motion, and camera motion. "
+        "Do not copy its camera composition, lighting, or background."
     )
 
 
@@ -457,10 +468,12 @@ def reinforce_prompt(
     injected: list[str] = []
     inserted: set[str] = set()
     section_instructions = {
+        # MiniMax defines an identity-only picture as the source of a Subject.
+        # A standalone Picture is reserved for a target frame or shot anchor.
+        "subject_definitions": [item for item in identity_texts if item in candidates],
         "summary": [item for item in (state_instruction,) if item in candidates],
-        # Identity scope is deliberately first and appears only in retention_analysis.
         "retention_analysis": [
-            item for item in (*identity_texts, state_instruction) if item in candidates
+            item for item in (state_instruction,) if item in candidates
         ],
     }
     for section, instructions in section_instructions.items():

@@ -111,6 +111,14 @@ test("Project tab edits and previews user-defined prompt templates", () => {
     assert.match(source, /workspace\.templatesDirty/);
 });
 
+test("Picture rail discovers native MMH3 Create media sockets and labels frozen previews", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
+    assert.match(source, /image\|video\|audio/);
+    assert.match(source, /linkedSource\(packet, input\.name\)/);
+    assert.match(source, /current graph preview/);
+    assert.match(source, /thumbnail unavailable/);
+});
+
 test("remaining batch plan accepts intermediates and leaves the final draft", () => {
     const { context } = frontend();
     const state = {
@@ -196,6 +204,15 @@ test("different-seed retry always returns a distinct valid integer", () => {
     assert.equal(Number.isInteger(seed), true);
     assert.equal(seed >= 0 && seed <= 0xFFFFFFFF, true);
     assert.notEqual(seed, 7);
+});
+
+test("queued drafts get distinct seeds even when the random source repeats", () => {
+    const { context } = frontend();
+    context.crypto = { getRandomValues(values) { values[0] = 42; return values; } };
+    const used = new Set([42, 43]);
+    const seeds = Array.from({length: 3}, (_, index) => context.differentUnusedSeed(index, used));
+    assert.deepEqual(seeds, [44, 45, 46]);
+    assert.equal(used.size, 5);
 });
 
 test("prompt diff compares an archived take to the current working prompt", () => {

@@ -82,7 +82,7 @@ Card fields include:
 | `draft_path`, `master_path` | Relative MMH3 artifact paths. |
 | `artifact_sha256` | Hash of the current authoritative artifact. |
 | `generation_fingerprint` | SHA-256 of the canonical generation recipe. |
-| `recipe` | Prompt, duration plan, model summary, compact upstream generation provenance, exact sigma values, sampler, parent hash, references, runtime capability snapshot, and the exact continuation-treatment recipe, schedule hash, baseline/source hashes, and VAE identity when applicable. |
+| `recipe` | Prompt, duration plan, model summary, compact upstream generation provenance, exact sigma values, sampler, parent hash, references, runtime capability snapshot, HyperFlow detection/continuation prompt compensation when applicable, and the exact continuation-treatment recipe, schedule hash, baseline/source hashes, and VAE identity when applicable. |
 | `anchors` | Persistent anchor records sourced from this card. These can contain automatic `current_state` and manual `identity` records. |
 | `preview` | Optional disposable project-owned MP4 metadata registered from the card's current artifact. |
 | `publication_history` | Superseded accepted versions retained when the latest card is unpublished. |

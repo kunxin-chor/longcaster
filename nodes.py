@@ -26,6 +26,7 @@ from .longcaster.h3_runtime import (
     sample_h3,
     sigma_values,
 )
+from .longcaster.hyperflow import compensate_hyperflow_continuation_prompt
 from .longcaster.mmh3_adapter import (
     load_packet,
     pack_and_save_card,
@@ -867,6 +868,23 @@ class LongCasterProject:
         effective_prompt = inject_lora_activation_words(
             effective_prompt, lora_activation_words
         )
+        upstream_provenance = capture_generation_provenance(prompt_graph, unique_id)
+        effective_prompt, hyperflow_compensation = compensate_hyperflow_continuation_prompt(
+            effective_prompt,
+            model=model,
+            provenance=upstream_provenance,
+            continuation_strategy=continuation_strategy,
+            context_frames=context_frames,
+        )
+        LOGGER.info(
+            "LongCaster HyperFlow detected=%s compensation=%s offset_seconds=%.3f "
+            "shifted_timestamps=%d sources=%s",
+            hyperflow_compensation["detected"],
+            hyperflow_compensation["applied"],
+            hyperflow_compensation["offset_seconds"],
+            hyperflow_compensation["explicit_timestamps_shifted"],
+            ",".join(hyperflow_compensation["sources"]) or "none",
+        )
         LOGGER.info(
             "LongCaster anchor prompt reinforcement injected=%s sections=%s",
             prompt_reinforced, ",".join(prompt_sections) or "none",
@@ -922,7 +940,6 @@ class LongCasterProject:
             "prompt_reinforcement_injected": bool(prompt_reinforced and anchor),
             "prompt_sections": prompt_sections,
         }
-        upstream_provenance = capture_generation_provenance(prompt_graph, unique_id)
         from .longcaster.color_stable import COLOR_STABLE_RECIPE, vae_identity
         from .longcaster.drift_control import DRIFT_CONTROL_RECIPE
         color_anchor_card_id = current.get("color_anchor_source_card_id", current["id"])
@@ -982,6 +999,7 @@ class LongCasterProject:
             ),
             "continuation_strategy": continuation_strategy,
             "continuation_source": continuation_source,
+            "hyperflow_continuation_compensation": hyperflow_compensation,
             "continuation_treatment": treatment_recipe,
             "references": references,
             "ref_image_size": ref_image_size,
@@ -1164,6 +1182,7 @@ class LongCasterProject:
                 "sigmas_sha256": generation_fingerprint({"sigmas": sigma_schedule}),
                 "reference_resolution": reference_report,
                 "continuation": continuation_plan,
+                "hyperflow_continuation_compensation": hyperflow_compensation,
                 "state_anchor": anchor_diagnostic,
                 "identity_anchor": identity_diagnostic,
                 "identity_anchors": identity_diagnostics,
