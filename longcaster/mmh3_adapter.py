@@ -514,7 +514,8 @@ def pack_and_save_refine_derivative(
     packed = api.pack_h3_result(
         packet,
         latent=clean_latent,
-        operation="longcaster_refine_derivative",
+        operation=("longcaster_hires_derivative" if derivative_metadata.get("type") == "hires_refine"
+                   else "longcaster_refine_derivative"),
         mode=mode,
         status="draft",
         process_info=process_info,

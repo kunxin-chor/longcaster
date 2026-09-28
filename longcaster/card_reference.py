@@ -172,3 +172,17 @@ def prepare_refine_reference(store, recipe, *, references, width, height, ref_im
             if resolved[field] != frozen[field]:
                 raise ProjectError("refine card reference no longer matches the accepted recipe")
     return resolved, image
+
+
+def prepare_hires_reference(store, recipe, *, references, width, height, ref_image_size, video_vae):
+    """Keep the accepted picture/mode/strength while rebuilding target-size latents."""
+    frozen = recipe.get("card_reference")
+    resolved, image = prepare_reference(
+        store, frozen, references=references, width=width, height=height,
+        ref_image_size=ref_image_size, video_vae=video_vae,
+    )
+    if frozen and frozen.get("enabled"):
+        from .project import ProjectError
+        if resolved["resolved_picture_index"] != frozen["resolved_picture_index"]:
+            raise ProjectError("hires card reference no longer matches the accepted picture index")
+    return resolved, image

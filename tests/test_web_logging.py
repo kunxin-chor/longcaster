@@ -103,6 +103,16 @@ class WebLoggingTests(unittest.TestCase):
         card.update({"status": "INVALIDATED", "artifact_sha256": None})
         self.assertEqual(self.routes._card_summary(card)["render_validity"], "INVALIDATED")
 
+    def test_hires_summary_is_separate_and_keeps_previous_ready_after_failure(self):
+        card = {"id": "card", "timeline_index": 0, "artifact_number": 1, "status": "ACCEPTED",
+                "derivatives": [{"id": "refine", "type": "refine", "status": "READY"},
+                                {"id": "hires", "type": "hires_refine", "status": "READY"},
+                                {"id": "failed", "type": "hires_refine", "status": "FAILED"}]}
+        summary = self.routes._card_summary(card)
+        self.assertEqual(summary["continuation_refine"]["id"], "refine")
+        self.assertEqual(summary["hires"]["id"], "failed")
+        self.assertEqual(summary["ready_hires"]["id"], "hires")
+
     def test_card_summary_previews_project_prompt_templates(self):
         card = {
             "id": "card-id", "timeline_index": 0, "artifact_number": 1,

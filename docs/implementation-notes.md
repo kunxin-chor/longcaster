@@ -1,5 +1,29 @@
 # MVP implementation notes
 
+## Per-accepted-card H3 hires
+
+`hires_project.py` supplies separate transactional bookkeeping; `hires.py` supplies pure target/protection contracts; `h3_latent_upscale.py` owns learned upscaler loading/unloading; `hires_runtime.py` reconstructs frozen conditioning and runs explicit Euler refinement. Stage 3A continues through its existing API. The vendored MIT network/normalization is from LBH's learned 3D upscaler, with its license retained in `longcaster/vendor/LICENSE.h3-upscaler`. No Timeline Director runtime is used.
+
+Video must be H3 B×24×T×H×W, audio B×32×…; unsupported layouts fail. The network uses its training normalization, temporal chunks of 32 with replicate padding/overlap blending, and 32-pixel alignment. Checkpoints load safely and strictly. Comfy-managed models are unloaded before learned inference. The learned model is offloaded/released in a `finally` block before conditioning/refinement, with cache cleanup. No learned-model GPU cache is retained.
+
+For a continued card, MMH3 reconstructs its protected mask at **target** dimensions. The reconstructed prefix must match the actual preceding hires tail byte-for-byte. A clamped (0.05) channelwise median DC offset is calculated/applied only on the disposable predicted prefix before that prefix is overwritten with the real parent values. The retained body is untouched by DC correction. All audio mask values are zero. Independent snapshots and strict dtype/byte equality detect in-place sampler corruption, rounding, or signed-zero changes, both after sampling and after archive reload. The native sampler/drift treatment is untouched.
+
+Hires requires explicit MODEL and SIGMAS. Connect a base hires MODEL before per-card LoRA application: frozen LoRA names/strengths/hashes are loaded internally, allowing any accepted card to upscale while a different child remains active. The source recipe supplies effective prompt, reference resources, identity IDs, card image/mode/strength, state-guide target frame, templates, activation words, and seed. Card-reference clean-cache keys include the hires canvas. Native AddGuide receives the target latent so keyframes are encoded/resized for that canvas.
+
+Studio separates latest attempt status from a previously ready hires result. Preview is a queued decode into a dedicated silent MP4; Timeline Export's `source=hires` verifies the complete required ancestry before decoding. It uses existing derivatives and the unchanged retained-frame/audio-trim rules. Auto-after-Accept is not implemented/enabled until visual seam validation succeeds.
+
+CPU validation covers migration, creation/completion/failure/restart/cancellation, native-source exclusion, ancestry and artifact hashes, regeneration/deletion, strict inherited head/tail equality, all-audio locking, median/clamp behavior, frozen target conditioning, schedule forwarding, export preflight, and Studio control states. Unit tests use synthetic tensor/archive/Comfy boundaries, not production model inference.
+
+Manual GPU validation remains required (no workflows were executed during implementation):
+
+1. At native 544×960, accept one card, upscale to 1088×1920, and inspect corruption, color, banding, flicker and unchanged audio. Read logged upscale/refine timings, latent dimensions, chunk count and VRAM measurements.
+2. Generate a direct second native card, accept and upscale using Card 1 hires. Export `hires`, inspect the trimmed join frame-by-frame for brightness/color/texture/motion/identity discontinuities. The runtime must also pass strict protected-prefix verification.
+3. Extend to 3–5 cards and inspect accumulated seams.
+4. Regenerate Card 3 hires: Cards 4–5 hires invalidate while all native masters and earlier hires remain valid.
+5. Verify independent and Image Restart cards create new hires chains without requiring their preceding hires.
+
+The defaults are designed for a 24 GB 4090 with Comfy offloading, but peak memory and output quality are **unmeasured** until these manual tests run. Temporal chunking bounds the learned upscaler; the high-resolution H3 refinement itself still depends on the connected model's memory/offload setup.
+
 ## Card-local Ref2VA pictures
 
 Implemented one card-owned PNG input with Normal/Soften controls, native `<Picture N>` numbering, schema-15 migration, take restoration, authoring-asset lifecycle, and accepted-source refine reconstruction. Global packet ownership, direct 39-frame continuation, state/identity guides, and PDD MODEL/SIGMAS forwarding remain as before.
@@ -16,7 +40,7 @@ PDD heads must match the diffusion trunk entering PDD Apply. Stock REF2VA uses t
 
 ## Implemented
 
-- Schema 21 project state: schema-20 per-card LoRA state plus user-defined project prompt templates, deterministic runtime expansion, frozen template provenance, and draft invalidation for changed referenced definitions.
+- Schema 22 adds separate hires derivatives and cadence. Schema 21 project state: schema-20 per-card LoRA state plus user-defined project prompt templates, deterministic runtime expansion, frozen template provenance, and draft invalidation for changed referenced definitions.
 
 - Patch-agnostic upstream `MODEL` input and Comfy Basic Guider sampling.
 - Optional external `SIGMAS`, with finite/decreasing/terminal-zero validation and direct forwarding to the advanced sampler.

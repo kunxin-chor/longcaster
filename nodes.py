@@ -27,6 +27,7 @@ from .longcaster.h3_runtime import (
     sigma_values,
 )
 from .longcaster.hyperflow import compensate_hyperflow_continuation_prompt
+from .longcaster.h3_latent_upscale import model_names as hires_model_names
 from .longcaster.mmh3_adapter import (
     load_packet,
     pack_and_save_card,
@@ -357,7 +358,7 @@ class LongCasterProject:
                 "video_vae": ("VAE",),
                 "audio_vae": ("VAE",),
                 "project_name": ("STRING", {"default": "longcaster_project"}),
-                "action": (["resume", "cancel", "generate", "retry", "accept", "create_refine", "unpublish", "invalidate", "invalidate_all", "remove_draft", "append"], {"default": "resume"}),
+                "action": (["resume", "cancel", "generate", "retry", "accept", "create_refine", "create_hires", "preview_hires", "unpublish", "invalidate", "invalidate_all", "remove_draft", "append"], {"default": "resume"}),
                 "generation_mode": (["ref2va", "t2va"], {"default": "ref2va"}),
                 "prompt": ("STRING", {"default": "", "multiline": True, "dynamicPrompts": True}),
                 "duration_seconds": ("FLOAT", {"default": 5.0, "min": 0.1, "max": 120.0, "step": 0.1}),
@@ -427,6 +428,15 @@ class LongCasterProject:
                 "refine_model": ("MODEL",),
                 "card_lora_state": ("LONGCASTER_LORA_STATE",),
                 "refine_card_lora_state": ("LONGCASTER_LORA_STATE",),
+                "hires_model": ("MODEL", {"tooltip": "Explicit hires base MODEL. Accepted card LoRAs are applied internally; do not connect a Card LoRAs output here."}),
+                "hires_sigmas": ("SIGMAS", {"tooltip": "Required for hires. No schedule is borrowed from generation or Stage 3A."}),
+                "hires_upscaler_model": (hires_model_names(),),
+                "hires_scale": ("FLOAT", {"default": 2.0, "min": 1.01, "max": 4.0, "step": 0.01}),
+                "hires_target_width": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 32}),
+                "hires_target_height": ("INT", {"default": 0, "min": 0, "max": 8192, "step": 32}),
+                "hires_temporal_chunking": ("BOOLEAN", {"default": True}),
+                "hires_precision": (["bf16", "fp16"], {"default": "bf16"}),
+                "hires_card_id": ("STRING", {"default": "", "tooltip": "Accepted card UUID; blank selects the active card. Studio sets this automatically."}),
             },
             "hidden": {
                 "prompt_graph": "PROMPT",
@@ -483,6 +493,15 @@ class LongCasterProject:
         refine_card_lora_state=None,
         prompt_graph=None,
         unique_id=None,
+        hires_model=None,
+        hires_sigmas=None,
+        hires_upscaler_model="",
+        hires_scale=2.0,
+        hires_target_width=0,
+        hires_target_height=0,
+        hires_temporal_chunking=True,
+        hires_precision="bf16",
+        hires_card_id="",
     ):
         import comfy.samplers
 
@@ -533,6 +552,36 @@ class LongCasterProject:
             raise ProjectError(
                 f"project mode is fixed at {manifest['generation_mode']}; the node requested {generation_mode}"
             )
+        if action in {"create_hires", "preview_hires"}:
+            from .longcaster.hires_runtime import create_hires
+            card_id = str(hires_card_id or manifest["active_card_id"])
+            if action == "create_hires":
+                manifest = create_hires(
+                    store=store, manifest=manifest, card_id=card_id, model=hires_model,
+                    sigmas=hires_sigmas, clip=clip, video_vae=video_vae, audio_vae=audio_vae,
+                    reference_packet=reference_packet, upscaler_model=hires_upscaler_model,
+                    scale=float(hires_scale), target_width=int(hires_target_width), target_height=int(hires_target_height),
+                    temporal_chunking=bool(hires_temporal_chunking), precision=hires_precision,
+                    model_snapshot=_model_snapshot(hires_model) if hires_model is not None else None,
+                )
+                message = "High-resolution derivative ready."
+            else:
+                card = store.card(manifest, card_id)
+                derivative = store.latest_ready_hires(manifest, card)
+                if derivative is None:
+                    raise ProjectError("this card has no ready high-resolution derivative")
+                from .longcaster.hires import joint_streams
+                _, latent = _packet_for_artifact(store, relative=derivative["artifact_path"],
+                                               artifact_sha256=derivative["artifact_sha256"], label="hires preview")
+                video, _ = joint_streams(latent)
+                images = video_vae.decode(video)
+                if images.ndim == 5:
+                    images = images.reshape(-1, *images.shape[-3:])
+                manifest, _ = encode_project_preview(store=store, card=card, images=images, derivative=derivative)
+                message = "High-resolution preview ready."
+            # Never send a hires artifact to the ordinary native preview/anchor consumers.
+            return self._result(None, None, _status(manifest, store, message), store)
+
         manifest = store.set_refine_cadence(refine_cadence)
         manifest = store.set_continuation_treatment(continuation_treatment)
         if action in {"generate", "retry", "accept", "resume"} and any(
@@ -1869,6 +1918,7 @@ class LongCasterTimelineExport:
                 "preset": (["p1", "p2", "p3", "p4", "p5", "p6", "p7"], {"default": "p4"}),
                 "cq": ("INT", {"default": 17, "min": 0, "max": 51, "step": 1}),
                 "audio_bitrate": (["128k", "192k", "256k", "320k"], {"default": "192k"}),
+                "source": (["native", "hires"], {"default": "native"}),
             },
             "optional": {
                 "project_state": (
@@ -1907,6 +1957,7 @@ class LongCasterTimelineExport:
         cq,
         audio_bitrate,
         project_state=None,
+        source="native",
     ):
         project_name = _project_from_state(project_name, project_state)
         if not enabled:
@@ -1922,6 +1973,7 @@ class LongCasterTimelineExport:
             preset=preset,
             cq=cq,
             audio_bitrate=audio_bitrate,
+            source=source,
         )
         preview = {
             "filename": path.name,

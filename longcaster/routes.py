@@ -222,6 +222,10 @@ def _card_summary(
             "continuation_source_preference", "accepted_master"
         ),
         "refine_enabled": card.get("refine_enabled", False),
+        "hires": next((item for item in reversed(card.get("derivatives", []))
+                       if item.get("type") == "hires_refine"), None),
+        "ready_hires": next((item for item in reversed(card.get("derivatives", []))
+                             if item.get("type") == "hires_refine" and item.get("status") == "READY"), None),
         "continuation_refine": next(
             (
                 item for item in reversed(card.get("derivatives", []))
@@ -304,6 +308,7 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "revision": manifest["revision"],
         "generation_mode": manifest["generation_mode"],
         "refine_cadence": manifest.get("refine_cadence", "off"),
+        "hires_cadence": manifest.get("hires_cadence", "manual"),
         "continuation_treatment": manifest.get("continuation_treatment", "off"),
         "lora_activation_words": manifest.get("lora_activation_words", ""),
         "prompt_templates": manifest.get("prompt_templates", []),
@@ -585,13 +590,36 @@ async def copy_cards_sections(request: web.Request) -> web.Response:
         return _error_response(exc)
 
 
+async def manage_hires(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        if payload.get("action") == "delete":
+            manifest = store.delete_hires(card_id=str(payload.get("card", "")),
+                                          expected_revision=int(payload.get("revision", -1)))
+        elif payload.get("action") == "cadence":
+            manifest = store.set_hires_cadence(str(payload.get("cadence", "")),
+                                               expected_revision=int(payload.get("revision", -1)))
+        else:
+            raise ProjectError("unsupported hires action")
+        return web.json_response(_cards_state(store, manifest, "High Resolution updated."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
 async def get_cards_preview(request: web.Request) -> web.StreamResponse:
     try:
         store = ProjectStore(_projects_root(), request.query.get("project", ""))
         manifest = store.load()
         card = store.card(manifest, request.query.get("card", ""))
         take_id = request.query.get("take")
-        if take_id:
+        if request.query.get("hires") == "1":
+            derivative = store.latest_ready_hires(manifest, card)
+            preview = (derivative or {}).get("preview")
+            if preview and (preview.get("source_artifact_sha256") != derivative["artifact_sha256"]
+                            or sha256_file(store.absolute_path(preview["asset_path"])) != preview["asset_sha256"]):
+                raise ProjectError("high-resolution preview is stale or corrupt")
+        elif take_id:
             take = next(
                 (item for item in card.get("draft_takes", []) if item.get("id") == take_id),
                 None,
@@ -906,6 +934,7 @@ def register_routes() -> bool:
     instance.routes.post("/longcaster/cards/copy")(copy_cards_sections)
     instance.routes.post("/longcaster/cards/continuation-source")(set_cards_continuation_source)
     instance.routes.get("/longcaster/cards/preview")(get_cards_preview)
+    instance.routes.post("/longcaster/cards/hires")(manage_hires)
     instance.routes.get("/longcaster/cards/prompts/export")(export_project_prompts)
     instance.routes.post("/longcaster/cards/take")(manage_draft_take)
     instance.routes.get("/longcaster/cards/anchor")(get_anchor_asset)

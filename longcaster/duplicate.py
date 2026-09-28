@@ -18,6 +18,7 @@ def clone_card_archive(
     destination: Path,
     project_name: str,
     source_artifact_sha256: str | None = None,
+    *, hires_parent_sha256: str | None = None,
 ) -> str:
     """Copy an MMH3 card while rebinding its LongCaster metadata."""
     from .mmh3_adapter import load_packet, mmh3_api, primary_latent
@@ -38,6 +39,8 @@ def clone_card_archive(
         )
         if isinstance(derivative_metadata, dict) and source_artifact_sha256 is not None:
             derivative_metadata["source_artifact_sha256"] = source_artifact_sha256
+            if derivative_metadata.get("type") == "hires_refine":
+                derivative_metadata["hires_parent_sha256"] = hires_parent_sha256
             packet = packet.set_extension_value("longcaster", "derivative", derivative_metadata)
 
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +236,7 @@ def duplicate_project(
                     )
                     cloned_by_source_hash[expected_hash] = target_path
 
+            hires_hashes = {}
             for card in duplicated["cards"]:
                 current_path = card.get("master_path") or card.get("draft_path")
                 if current_path in new_hashes:
@@ -263,12 +267,26 @@ def duplicate_project(
                             f"source derivative changed while duplicating: {artifact_path}"
                         )
                     derivative_target = (staging / Path(artifact_path)).resolve()
+                    clone_kwargs = {}
+                    if derivative.get("type") == "hires_refine":
+                        parent_id = derivative.get("hires_parent_derivative_id")
+                        parent_hash = hires_hashes.get(parent_id) if parent_id else None
+                        if parent_id and parent_hash is None:
+                            raise ProjectError("cannot duplicate hires with missing parent ancestry")
+                        derivative["hires_parent_sha256"] = parent_hash
+                        if archive_cloner is clone_card_archive:
+                            clone_kwargs["hires_parent_sha256"] = parent_hash
                     derivative["artifact_sha256"] = archive_cloner(
                         derivative_source,
                         derivative_target,
                         destination.project_name,
                         derivative.get("source_artifact_sha256"),
+                        **clone_kwargs,
                     )
+                    if derivative.get("type") == "hires_refine":
+                        hires_hashes[derivative["id"]] = derivative["artifact_sha256"]
+                        if derivative.get("preview"):
+                            derivative["preview"]["source_artifact_sha256"] = derivative["artifact_sha256"]
 
             cards_by_id = {card["id"]: card for card in duplicated["cards"]}
             for card_id, record in duplicated.get("color_baseline_stats", {}).items():

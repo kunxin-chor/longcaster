@@ -13,17 +13,18 @@ from .timeline_export import _ffmpeg, _finish_process, _write_video_frames
 def encode_project_preview(
     *, store: ProjectStore, card: dict[str, Any], images: Any,
     preset: str = "p4", cq: int = 17,
+    derivative: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], Path]:
     """Encode a silent project preview used for review and visual frame selection."""
     if not hasattr(images, "shape") or len(images.shape) != 4 or int(images.shape[0]) < 1:
         raise ProjectError("project preview requires at least one decoded IMAGE frame")
-    artifact_hash = card.get("artifact_sha256")
+    artifact_hash = (derivative or card).get("artifact_sha256")
     if not artifact_hash:
         raise ProjectError("project preview source card has no artifact hash")
     height, width = int(images.shape[1]), int(images.shape[2])
     destination = store.absolute_path(
-        f"previews/{card['id']}/card_{int(card['artifact_number']):04d}_{artifact_hash[:12]}.mp4"
-    )
+        f"derivatives/{card['id']}/hires_{derivative['id']}.mp4" if derivative else
+        f"previews/{card['id']}/card_{int(card['artifact_number']):04d}_{artifact_hash[:12]}.mp4")
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp.mp4")
     process: subprocess.Popen | None = None
@@ -42,12 +43,18 @@ def encode_project_preview(
         _finish_process(process, "NVENC project preview encode")
         process = None
         os.replace(temporary, destination)
-        manifest = store.record_preview(
-            card_id=card["id"],
-            preview_path=destination,
-            preview_sha256=sha256_file(destination),
-            source_artifact_sha256=artifact_hash,
-        )
+        record = store.record_hires_preview if derivative else store.record_preview
+        try:
+            manifest = record(
+                card_id=card["id"],
+                preview_path=destination,
+                preview_sha256=sha256_file(destination),
+                source_artifact_sha256=artifact_hash,
+            )
+        except Exception:
+            if derivative:
+                destination.unlink(missing_ok=True)
+            raise
         return manifest, destination
     finally:
         if process is not None:

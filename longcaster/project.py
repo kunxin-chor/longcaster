@@ -30,9 +30,11 @@ from .prompt_sections import (
     validate_prompt_sections,
 )
 from .refine import CONTINUATION_SOURCE_TYPES, REFINE_CADENCES, validate_refine_cadence
+from .hires import HIRES_CADENCES, AUDIO_HANDLING, resolve_target
+from .hires_project import HiresProjectMixin
 
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
@@ -330,7 +332,7 @@ def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
     })
 
 
-class ProjectStore:
+class ProjectStore(HiresProjectMixin):
     def __init__(self, projects_root: str | Path, project_name: str):
         self.projects_root = Path(projects_root).resolve()
         self.project_name = _validate_project_name(project_name)
@@ -411,6 +413,7 @@ class ProjectStore:
                 "updated_at": now,
                 "generation_mode": generation_mode,
                 "refine_cadence": refine_cadence,
+                "hires_cadence": "manual",
                 "continuation_treatment": continuation_treatment,
                 "lora_activation_words": lora_activation_words,
                 "prompt_templates": prompt_templates,
@@ -439,7 +442,7 @@ class ProjectStore:
                 and pending.get("owner_runtime_id") != _RUNTIME_ID
             ):
                 card = self._card(manifest, pending.get("card_id"))
-                if pending.get("kind") == "refine":
+                if pending.get("kind") in {"refine", "hires_refine"}:
                     derivative = self._derivative(card, pending.get("derivative_id"))
                     derivative.update({
                         "status": "FAILED",
@@ -642,7 +645,7 @@ class ProjectStore:
             if not pending:
                 return deepcopy(manifest), False
             card = self._card(manifest, pending["card_id"])
-            if pending.get("kind") == "refine":
+            if pending.get("kind") in {"refine", "hires_refine"}:
                 derivative = self._derivative(card, pending.get("derivative_id"))
                 derivative.update({
                     "status": "FAILED",
@@ -768,6 +771,9 @@ class ProjectStore:
                 relative = derivative.get("artifact_path")
                 if relative:
                     derivative_paths.append(self.absolute_path(relative))
+                preview_relative = (derivative.get("preview") or {}).get("asset_path")
+                if preview_relative:
+                    derivative_paths.append(self.absolute_path(preview_relative))
 
             old_artifact_number = int(card["artifact_number"])
             old_anchors = deepcopy(card.get("anchors", []))
@@ -1115,6 +1121,7 @@ class ProjectStore:
                 ),
                 *(item.get("asset_path") for item in card.get("anchors", [])),
                 *(item.get("artifact_path") for item in card.get("derivatives", [])),
+                *((item.get("preview") or {}).get("asset_path") for item in card.get("derivatives", [])),
             ]
             for publication in publication_history:
                 disposable_relatives.extend((
@@ -1122,6 +1129,7 @@ class ProjectStore:
                     (publication.get("preview") or {}).get("asset_path"),
                     *(item.get("asset_path") for item in publication.get("anchors", [])),
                     *(item.get("artifact_path") for item in publication.get("derivatives", [])),
+                    *((item.get("preview") or {}).get("asset_path") for item in publication.get("derivatives", [])),
                 ))
             disposable_files: list[Path] = []
             for relative in disposable_relatives:
@@ -1201,6 +1209,7 @@ class ProjectStore:
                 *((item.get("preview") or {}).get("asset_path") for item in card.get("draft_takes", [])),
                 *(item.get("asset_path") for item in card.get("anchors", [])),
                 *(item.get("artifact_path") for item in card.get("derivatives", [])),
+                *((item.get("preview") or {}).get("asset_path") for item in card.get("derivatives", [])),
             ]
             for publication in history:
                 disposable_relatives.extend((
@@ -1208,6 +1217,7 @@ class ProjectStore:
                     (publication.get("preview") or {}).get("asset_path"),
                     *(item.get("asset_path") for item in publication.get("anchors", [])),
                     *(item.get("artifact_path") for item in publication.get("derivatives", [])),
+                    *((item.get("preview") or {}).get("asset_path") for item in publication.get("derivatives", [])),
                 ))
 
             operation_id = str(uuid.uuid4())
@@ -1349,6 +1359,7 @@ class ProjectStore:
                     *((item.get("preview") or {}).get("asset_path") for item in card.get("draft_takes", [])),
                     *(item.get("asset_path") for item in card.get("anchors", [])),
                     *(item.get("artifact_path") for item in card.get("derivatives", [])),
+                    *((item.get("preview") or {}).get("asset_path") for item in card.get("derivatives", [])),
                 ))
                 removed_anchor_ids.update(
                     item.get("anchor_id") for item in card.get("anchors", [])
@@ -1360,6 +1371,7 @@ class ProjectStore:
                         (publication.get("preview") or {}).get("asset_path"),
                         *(item.get("asset_path") for item in publication.get("anchors", [])),
                         *(item.get("artifact_path") for item in publication.get("derivatives", [])),
+                        *((item.get("preview") or {}).get("asset_path") for item in publication.get("derivatives", [])),
                     ))
                     removed_anchor_ids.update(
                         item.get("anchor_id") for item in publication.get("anchors", [])
@@ -1490,6 +1502,7 @@ class ProjectStore:
                     *((item.get("preview") or {}).get("asset_path") for item in card.get("draft_takes", [])),
                     *(item.get("asset_path") for item in card.get("anchors", [])),
                     *(item.get("artifact_path") for item in card.get("derivatives", [])),
+                    *((item.get("preview") or {}).get("asset_path") for item in card.get("derivatives", [])),
                 ))
                 for publication in card.get("publication_history", []):
                     used_numbers.append(int(publication["artifact_number"]))
@@ -1498,6 +1511,7 @@ class ProjectStore:
                         (publication.get("preview") or {}).get("asset_path"),
                         *(item.get("asset_path") for item in publication.get("anchors", [])),
                         *(item.get("artifact_path") for item in publication.get("derivatives", [])),
+                        *((item.get("preview") or {}).get("asset_path") for item in publication.get("derivatives", [])),
                     ))
 
             operation_id = str(uuid.uuid4())
@@ -2673,7 +2687,7 @@ class ProjectStore:
                 derivative = self._derivative(parent, source.get("derivative_id"))
             except ProjectError:
                 derivative = None
-            if derivative and derivative.get("status") == "READY":
+            if derivative and derivative.get("type") == "refine" and derivative.get("status") == "READY":
                 try:
                     derivative_path = self.absolute_path(derivative["artifact_path"])
                     derivative_ready = (
@@ -2860,6 +2874,8 @@ class ProjectStore:
                 if derivative.get("status") != "READY":
                     continue
                 try:
+                    if derivative.get("type") == "hires_refine":
+                        self.latest_ready_hires(manifest, card)
                     derivative_path = self.absolute_path(derivative["artifact_path"])
                     if not derivative_path.is_file():
                         errors.append(
@@ -2905,6 +2921,7 @@ class ProjectStore:
         return manifest
 
     def _commit_unlocked(self, manifest: dict[str, Any]) -> None:
+        self._invalidate_stale_hires(manifest)
         manifest["revision"] = int(manifest.get("revision", 0)) + 1
         manifest["updated_at"] = utc_now()
         self._validate(manifest)
@@ -2919,6 +2936,8 @@ class ProjectStore:
             raise ProjectError("project generation_mode must be ref2va or t2va")
         if manifest.get("refine_cadence") not in REFINE_CADENCES:
             raise ProjectError("project has an invalid refine_cadence")
+        if manifest.get("hires_cadence") not in HIRES_CADENCES:
+            raise ProjectError("project has an invalid hires_cadence")
         if manifest.get("continuation_treatment") not in CONTINUATION_TREATMENTS:
             raise ProjectError("project has an invalid continuation_treatment")
         width = manifest.get("width")
@@ -3162,14 +3181,52 @@ class ProjectStore:
                 if derivative_id in derivative_ids:
                     raise ProjectError("derivative IDs must be unique")
                 derivative_ids.add(derivative_id)
-                if derivative.get("type") != "refine":
+                if derivative.get("type") not in {"refine", "hires_refine"}:
                     raise ProjectError("unsupported derivative type")
-                if derivative.get("status") not in {"PROCESSING", "READY", "FAILED"}:
+                derivative_states = {"PROCESSING", "READY", "FAILED"}
+                if derivative.get("type") == "hires_refine":
+                    derivative_states.add("INVALIDATED")
+                if derivative.get("status") not in derivative_states:
                     raise ProjectError("invalid refine derivative status")
                 if derivative.get("source_card_id") != card.get("id"):
                     raise ProjectError("refine derivative source card does not match")
-                if derivative.get("cadence") not in REFINE_CADENCES:
+                if derivative.get("type") == "refine" and derivative.get("cadence") not in REFINE_CADENCES:
                     raise ProjectError("refine derivative has invalid cadence")
+                if derivative.get("type") == "hires_refine":
+                    try:
+                        target = resolve_target(
+                            width, height, scale=derivative["scale"],
+                            target_width=derivative["target_width"], target_height=derivative["target_height"],
+                        )
+                        if any(derivative.get(k) != v for k, v in target.items()):
+                            raise ValueError("hires dimensions or scale do not match its native source")
+                        if (derivative.get("audio_handling") != AUDIO_HANDLING
+                                or derivative.get("precision") not in {"bf16", "fp16"}
+                                or not isinstance(derivative.get("temporal_chunking"), bool)
+                                or derivative.get("force_unload") is not True
+                                or derivative.get("use_as_default")
+                                or not derivative.get("upscaler_model")):
+                            raise ValueError("invalid hires configuration")
+                        if derivative.get("hires_parent_derivative_id") is not None:
+                            uuid.UUID(derivative["hires_parent_derivative_id"])
+                            if not re.fullmatch(r"[0-9a-f]{64}", derivative.get("hires_parent_sha256") or ""):
+                                raise ValueError("invalid hires parent hash")
+                        elif derivative.get("hires_parent_sha256") is not None:
+                            raise ValueError("hires parent hash requires an ID")
+                        expected_artifact = self.relative_path(self.hires_destination(card, derivative_id))
+                        artifact = derivative.get("artifact_path")
+                        if artifact is not None and self.relative_path(artifact) != expected_artifact:
+                            raise ValueError("hires artifact must use its own derivative destination")
+                        preview = derivative.get("preview")
+                        if preview is not None:
+                            expected_preview = str(Path(expected_artifact).with_suffix(".mp4")).replace("\\", "/")
+                            if (not isinstance(preview, dict)
+                                    or preview.get("asset_path") != expected_preview
+                                    or preview.get("source_artifact_sha256") != derivative.get("artifact_sha256")
+                                    or not re.fullmatch(r"[0-9a-f]{64}", preview.get("asset_sha256") or "")):
+                                raise ValueError("invalid hires preview path or hash")
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ProjectError(f"invalid hires derivative: {exc}") from exc
                 if not isinstance(derivative.get("recipe"), dict):
                     raise ProjectError("refine derivative recipe must be an object")
                 source_path = derivative.get("source_master_path")
@@ -3189,8 +3246,9 @@ class ProjectStore:
                         r"[0-9a-f]{64}", derivative["artifact_sha256"]
                     ):
                         raise ProjectError("ready refine derivative hash must be a lowercase SHA-256")
-                    ready_derivatives[derivative_id] = card["id"]
-                    ready_on_card = True
+                    if derivative.get("type") == "refine":
+                        ready_derivatives[derivative_id] = card["id"]
+                        ready_on_card = True
             if preference == "derivative" and not ready_on_card:
                 raise ProjectError("refined continuation preference requires a ready derivative")
             accepted_publication_id = card.get("accepted_publication_id")
@@ -3336,6 +3394,8 @@ class ProjectStore:
             anchors_by_id[anchor_id] = anchor
         if manifest.get("active_card_id") not in ids:
             raise ProjectError("active card does not exist")
+        for card in cards:
+            self.latest_ready_hires(manifest, card, verify=False)
         color_stats = manifest.get("color_baseline_stats")
         if not isinstance(color_stats, dict):
             raise ProjectError("color_baseline_stats must be an object")
@@ -3373,7 +3433,7 @@ class ProjectStore:
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
-        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20}:
+        if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
         color_anchors: dict[str, str] = {}
@@ -3467,6 +3527,7 @@ class ProjectStore:
         manifest.setdefault("imported_identity_anchors", [])
         manifest.setdefault("color_baseline_stats", {})
         manifest.setdefault("refine_cadence", "off")
+        manifest.setdefault("hires_cadence", "manual")
         manifest.setdefault("continuation_treatment", "off")
         manifest.setdefault("lora_activation_words", "")
         manifest.setdefault("prompt_templates", [])

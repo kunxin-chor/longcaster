@@ -1,5 +1,23 @@
 # ComfyUI MiniMax H3 LongCaster
 
+## Per-card High Resolution
+
+Accepted cards can produce separate H3 learned **3D latent upscale + refinement** derivatives. The default 2× scale turns a native `544 × 960` card into `1088 × 1920`. Native masters, native project resolution, and Stage 3A continuation-refine selection remain authoritative for ordinary generation.
+
+Setup on the **LongCaster Project** node:
+
+1. Place an H3 **3D** learned-upscaler checkpoint in `ComfyUI/models/latent_upscale_models`, then select `hires_upscaler_model`. [LBH's model repository](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) supplies weights. Its compatible [MIT 3D architecture and normalization](https://github.com/LBH-123-AI/Comfyui_Minimax_h3_latent_Upscaler/blob/main/nodes/minimax_h3_latent_upscaler_3d.py) are bundled; installing LBH's custom nodes is unnecessary.
+2. Connect explicit `hires_model` and `hires_sigmas` inputs. Use a hires base MODEL **before LongCaster Card LoRAs**: accepted card LoRAs are applied internally with hash verification. Choose a hires schedule explicitly; Euler is used. No generation, PDD/HyperFlow, or Stage 3A schedule is borrowed.
+3. Keep the original CLIP, video/audio VAEs, and accepted reference packet connected. Hires rebuilds the accepted effective prompt, references, card picture, identities, and state guide at the target resolution. Mutable child-card settings never supply hires conditioning.
+4. In Studio, select any accepted card and choose **High Resolution → Upscale Accepted Card**. The sequence is Generate → Accept → Upscale → Append → Generate → Accept → Upscale.
+5. **Preview** decodes a silent hires review clip. **Regenerate** replaces a hires result; **Delete** removes that card's hires outputs. For final video/audio export, set Timeline Export's `source` to **hires** and disable `include_active_draft`.
+
+Direct continuations require the generation parent's ready hires derivative. The child inherits its actual hires tail, locks the corresponding opening, and locks **all native audio**. Sampling and serialization must preserve protected values byte-for-byte or the derivative fails. Independent shots and Image Restart start new hires chains. Successful hires regeneration/deletion invalidates dependent hires only; a failed retry preserves a previous ready output.
+
+Project **Hires cadence** defaults to **Manual**; Off disables upscaling. Auto-after-Accept remains unavailable pending seam validation. `hires_scale` defaults to `2.0`; setting both target dimensions overrides scale, with 32-pixel alignment. Temporal chunking defaults on; precision defaults to bf16 with fp16 fallback when unsupported. The learned model is always unloaded before H3 sampling, which uses Comfy's existing model offloading.
+
+CPU bookkeeping, tensor protection, synthetic runtime, and frontend state tests are included. **Real GPU quality, seams, and RTX 4090 / 24 GB peak memory still require manual validation.** See [implementation notes](docs/implementation-notes.md). Timeline export decodes existing ready hires derivatives and trims the same continuation overlap as native export.
+
 ## Card Reference and latent strength
 
 In Studio's Card tab, **Card Reference** adds one picture owned by that card. Upload or replace an image, enable/disable it, and choose **Normal** or **Soften**. The input is saved as a lossless PNG inside the project. Accepted cards are read-only; T2VA does not support these references.
@@ -25,9 +43,9 @@ The current implementation gives early priority to the two production paths this
 - a pre-patched REF2VA model, with the REF2VA/FL2VA hybrid available as an explicit experimental comparison;
 - PDD-ACC's patched `MODEL` and exact external `SIGMAS` schedule.
 
-LongCaster never loads or unwraps the diffusion model. It sends the supplied `MODEL` to Comfy's Basic Guider unchanged. When `SIGMAS` is connected, the same tensor is passed to `SamplerCustomAdvanced`; LongCaster does not rebuild PDD's schedule.
+Native generation never loads or unwraps the diffusion model. It sends the supplied `MODEL` to Comfy's Basic Guider unchanged. When `SIGMAS` is connected, the same tensor is passed to `SamplerCustomAdvanced`; LongCaster does not rebuild PDD's schedule. Hires separately loads the learned upscaler and applies frozen card LoRAs to its explicitly connected hires MODEL.
 
-All checkpoint selection stays in ordinary ComfyUI loader nodes. LongCaster contains no model filename or internal loader, so diffusion models, hybrid presets, text encoders, VAEs, and PDD files can be changed in the workflow UI.
+Diffusion models, hybrid presets, text encoders, VAEs, and PDD files remain selected in ordinary ComfyUI loader nodes. The learned hires upscaler has its own checkpoint selector on the Project node.
 
 ## Installation
 

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from longcaster.card_reference import (
-    CachedCardVAE, clean_cache_key, prepare_reference, prepare_refine_reference,
+    CachedCardVAE, clean_cache_key, prepare_reference, prepare_refine_reference, prepare_hires_reference,
     substitute_card_latent, vae_identity, _CACHE,
 )
 from longcaster.duplicate import duplicate_project
@@ -75,7 +75,7 @@ class CardReferenceStoreTests(unittest.TestCase):
         del manifest["cards"][0]["card_reference"]
         self.store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         loaded = self.store.load()
-        self.assertEqual(loaded["schema_version"], 15)
+        self.assertEqual(loaded["schema_version"], 22)
         self.assertIsNone(loaded["cards"][0]["card_reference"])
 
     def test_upload_replace_remove_keep_take_sources(self):
@@ -337,6 +337,12 @@ class CardReferenceRuntimeTests(unittest.TestCase):
             rebuilt, image = prepare_refine_reference(store, {"card_reference": frozen}, **args)
             self.assertEqual(rebuilt["latent_strength"], 1)
             self.assertTrue(torch.equal(image, rgb))
+            hires_args = {**args, "width": 128, "height": 64}
+            hires, hires_image = prepare_hires_reference(store, {"card_reference": frozen}, **hires_args)
+            self.assertEqual(hires["canvas"], [128, 64])
+            self.assertEqual(hires["latent_strength"], 1)
+            self.assertNotEqual(hires["clean_cache_key"], frozen["clean_cache_key"])
+            self.assertTrue(torch.equal(hires_image, rgb))
             args["references"] = {"resources": []}
             with self.assertRaisesRegex(ProjectError, "accepted recipe"):
                 prepare_refine_reference(store, {"card_reference": frozen}, **args)

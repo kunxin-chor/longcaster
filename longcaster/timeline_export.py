@@ -83,12 +83,14 @@ def _has_nvenc(executable: str) -> bool:
     return available
 
 
-def _card_latent(store: ProjectStore, card: dict[str, Any]) -> dict[str, Any]:
+def _card_latent(store: ProjectStore, card: dict[str, Any], *, derivative=None) -> dict[str, Any]:
     relative = card.get("master_path") if card["status"] == "ACCEPTED" else card.get("draft_path")
+    if derivative is not None:
+        relative = derivative["artifact_path"]
     if not relative:
         raise ProjectError(f"card {card['artifact_number']} has no archive")
     path = store.absolute_path(relative)
-    if not path.is_file() or sha256_file(path) != card.get("artifact_sha256"):
+    if not path.is_file() or sha256_file(path) != (derivative or card).get("artifact_sha256"):
         raise ProjectError(f"card {card['artifact_number']} archive is missing or corrupt")
     packet = load_packet(path, verify="on_access")
     latent, _ = primary_latent(packet)
@@ -130,6 +132,7 @@ def export_timeline_nvenc(
     cq: int,
     preset: str,
     audio_bitrate: str,
+    source: str = "native",
 ) -> tuple[Path, str, int, int]:
     import torch
     import torch.nn.functional as functional
@@ -140,6 +143,7 @@ def export_timeline_nvenc(
     cards = selected_cards(manifest, include_active_draft)
     if not cards:
         raise ProjectError("Timeline export requires at least one accepted card or an included active draft")
+    derivatives = export_hires_sources(store, manifest, cards, source=source)
 
     executable = _ffmpeg()
     output_root = Path(folder_paths.get_output_directory()).resolve()
@@ -156,7 +160,7 @@ def export_timeline_nvenc(
 
     try:
         for card in cards:
-            latent = _card_latent(store, card)
+            latent = _card_latent(store, card, derivative=derivatives.get(card["id"]))
             parts = latent["samples"].unbind()
             if len(parts) != 2:
                 raise ProjectError(f"card {card['artifact_number']} is not a joint H3 video/audio latent")
@@ -196,6 +200,8 @@ def export_timeline_nvenc(
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.PIPE,
                 )
+            elif (int(images.shape[2]), int(images.shape[1])) != (width, height):
+                raise ProjectError("timeline cards have different decoded resolutions")
 
             _write_video_frames(video_process, images)
             total_frames += retained_frames
@@ -259,3 +265,25 @@ def export_timeline_nvenc(
         for path in (temporary_video, temporary_audio, temporary_mux):
             if path is not None:
                 path.unlink(missing_ok=True)
+
+
+def export_hires_sources(store, manifest, cards, *, source="native"):
+    """Preflight every ancestor before starting a decoder or encoder."""
+    if source not in {"native", "hires"}:
+        raise ProjectError("timeline source must be native or hires")
+    if source == "native":
+        return {}
+    derivatives = {}
+    resolution = None
+    for card in cards:
+        if card.get("status") != "ACCEPTED":
+            raise ProjectError("hires export supports accepted cards only; disable include_active_draft")
+        derivative = store.latest_ready_hires(manifest, card)
+        if derivative is None:
+            raise ProjectError(f"Card {card['timeline_index'] + 1} has no ready high-resolution derivative")
+        target = (derivative["target_width"], derivative["target_height"])
+        if resolution is not None and target != resolution:
+            raise ProjectError("hires export requires matching target resolutions")
+        resolution = target
+        derivatives[card["id"]] = derivative
+    return derivatives

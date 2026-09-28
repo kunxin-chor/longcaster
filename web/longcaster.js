@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { createCardReferenceControls, referenceSettings } from "./card_reference.js";
 import { assemblePictureReferences, createPictureReferenceRail } from "./picture_reference_rail.js";
+import { hiresCardState, repairHiresWidgetDefaults } from "./hires.js";
 
 function widget(node, name) {
     return node.widgets?.find((item) => item.name === name);
@@ -882,6 +883,16 @@ function createCardsWorkspace(node) {
     const useRefined = cardsElement("button", "", "Use Refined");
     const refineControls = cardsElement("div", "lc-cards-actions");
     refineControls.append(createRefine, useAcceptedMaster, useRefined);
+    const hiresSection = cardsElement("section", "lc-cards-hires");
+    const hiresStatus = cardsElement("div", "lc-cards-info");
+    const createHires = cardsElement("button", "", "Upscale Accepted Card");
+    const previewHires = cardsElement("button", "", "Preview");
+    const deleteHires = cardsElement("button", "lc-identity-delete", "Delete");
+    const hiresVideo = cardsElement("video", "lc-project-identity-video");
+    hiresVideo.controls = true; hiresVideo.preload = "metadata"; hiresVideo.hidden = true;
+    const hiresControls = cardsElement("div", "lc-cards-actions");
+    hiresControls.append(createHires, previewHires, deleteHires);
+    hiresSection.append(cardsElement("h3", "", "High Resolution"), hiresStatus, hiresControls, hiresVideo);
     const identities = cardsElement("div", "lc-cards-assets");
     const references = cardsElement("div", "lc-cards-assets");
     const editReferences = cardsElement("button", "", "Edit connected reference graph");
@@ -903,6 +914,7 @@ function createCardsWorkspace(node) {
     identityImport.tabIndex = 0;
     identityImport.append(cardsElement("small", "", "The image is copied into this project and selected for the subject above."), identityImportInput);
     preview.append(video, buildPreview, takesHeading, draftTakes, promptDiffDetails, generationSetupDetails, info, cardsElement("h3", "", "Continuation Refine"), refineStatus, refineControls);
+    preview.append(hiresSection);
     main.append(sidebar, editor, preview);
 
     const projectView = cardsElement("section", "lc-cards-project"); projectView.hidden = true;
@@ -991,7 +1003,16 @@ function createCardsWorkspace(node) {
         playProjectPreview,
         projectPreviewVideo,
     );
-    projectView.append(resolutionPanel, loraPanel, templatePanel, identityPanel, referencePanel, promptExportPanel, projectPreviewPanel);
+    const hiresPanel = cardsElement("section", "lc-project-panel");
+    const hiresCadence = document.createElement("select");
+    for (const [value, label] of [["off", "Off"], ["manual", "Manual"], ["auto", "Auto after Accept (awaiting seam validation)"]]) {
+        const option = document.createElement("option");
+        option.value = value; option.textContent = label; option.disabled = value === "auto";
+        hiresCadence.append(option);
+    }
+    hiresPanel.append(cardsElement("h2", "", "High Resolution"), field("Hires cadence", hiresCadence),
+        cardsElement("div", "lc-cards-help", "Connect hires_model and hires_sigmas on the Project node, and select its H3 3D upscaler checkpoint. Accepted card LoRAs are applied internally. Default: 2×, temporal chunking, bf16, model unload. Timeline Export: select hires to use existing ready derivatives."));
+    projectView.append(resolutionPanel, hiresPanel, loraPanel, templatePanel, identityPanel, referencePanel, promptExportPanel, projectPreviewPanel);
     const footer = cardsElement("div", "lc-cards-footer");
     const message = cardsElement("span", "", "Loading…");
     const saveState = cardsElement("span", "lc-cards-save");
@@ -1357,6 +1378,8 @@ function createCardsWorkspace(node) {
         if (!state) return;
         const card = selectedCard();
         const batchActive = Boolean(workspace.batch?.active || workspace.draftBatch?.active);
+        hiresCadence.value = state.hires_cadence || "manual";
+        hiresCadence.disabled = Boolean(state.pending_operation) || batchActive;
         const showingCard = workspace.activeView === "card";
         main.hidden = !showingCard;
         projectView.hidden = showingCard;
@@ -1629,6 +1652,35 @@ function createCardsWorkspace(node) {
             ...(card.last_error ? [cardsElement("div", "lc-cards-error", `Last error: ${card.last_error}`)] : []),
         );
         const derivative = card.continuation_refine;
+        const hr = hiresCardState(card, state, {
+            batchActive, scale: widget(node, "hires_scale")?.value,
+            width: widget(node, "hires_target_width")?.value,
+            height: widget(node, "hires_target_height")?.value,
+        });
+        hiresSection.hidden = !hr.visible;
+        hiresStatus.replaceChildren(
+            cardsElement("div", "", `Status: ${hr.status}`),
+            cardsElement("div", "", `Native: ${state.width} × ${state.height} · Target: ${hr.width} × ${hr.height} · ${hr.scale}×`),
+            cardsElement("div", "", "Upscaler: MiniMax H3 Learned 3D"),
+            cardsElement("div", "", `Temporal chunking: ${(card.hires?.temporal_chunking ?? widget(node, "hires_temporal_chunking")?.value ?? true) ? "On" : "Off"}`),
+            cardsElement("div", "", `Parent HR: ${hr.parentLabel}`),
+            ...(card.hires?.execution_seconds != null ? [cardsElement("div", "", `Execution: ${Number(card.hires.execution_seconds).toFixed(1)} sec`)] : []),
+            ...(hr.reason ? [cardsElement("div", "lc-cards-help", hr.reason)] : []),
+            ...(card.hires?.last_error ? [cardsElement("div", "lc-cards-error", card.hires.last_error)] : []),
+            ...(card.hires?.status === "FAILED" && hr.ready ? [cardsElement("div", "", "Previous ready output is still available.")] : []),
+        );
+        createHires.textContent = card.hires ? "Regenerate" : "Upscale Accepted Card";
+        createHires.disabled = !hr.canCreate; createHires.title = hr.reason;
+        previewHires.disabled = !hr.canPreview; deleteHires.disabled = !hr.canDelete;
+        const hrPreview = hr.ready?.preview;
+        hiresVideo.hidden = !hrPreview;
+        const hrUrl = hrPreview ? api.apiURL(`/longcaster/cards/preview?${new URLSearchParams({project: state.project, card: card.id, hires: "1", version: hrPreview.asset_sha256})}`) : "";
+        if (hiresVideo.dataset.source !== hrUrl) {
+            hiresVideo.pause(); hiresVideo.dataset.source = hrUrl;
+            if (hrUrl) hiresVideo.src = hrUrl;
+            else hiresVideo.removeAttribute("src");
+            hiresVideo.load();
+        }
         const derivativeState = derivative?.status || "NOT_CREATED";
         refineStatus.replaceChildren(
             cardsElement("div", `lc-status-${derivativeState === "READY" ? "ACCEPTED" : derivativeState === "FAILED" ? "FAILED" : "EMPTY"}`, `Status: ${derivativeState.replaceAll("_", " ")}`),
@@ -3044,6 +3096,35 @@ function createCardsWorkspace(node) {
         invalidateFromSelectedCard();
     };
     createRefine.onclick = () => runAction("create_refine");
+    async function queueHires(action) {
+        const card = selectedCard();
+        if (!card || card.status !== "ACCEPTED" || workspace.state.pending_operation || workspace.batch?.active || workspace.draftBatch?.active) return;
+        const target = widget(node, "hires_card_id");
+        if (!target) { setMessage("Refresh ComfyUI to load the new hires inputs.", true); return; }
+        target.value = card.id;
+        setMessage(`${action === "preview_hires" ? "High-resolution preview" : "High-resolution upscale"} queued for Card ${card.timeline_index + 1}.`);
+        await queueAction(node, action);
+    }
+    createHires.onclick = () => queueHires("create_hires");
+    previewHires.onclick = () => {
+        if (selectedCard()?.ready_hires?.preview) hiresVideo.play().catch(() => {});
+        else queueHires("preview_hires");
+    };
+    async function updateHires(action, extra = {}) {
+        if (!await flush()) return;
+        try {
+            const body = await responseJson(await api.fetchApi("/longcaster/cards/hires", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({project: workspace.state.project, revision: workspace.state.revision,
+                    card: selectedCard()?.id, action, ...extra}),
+            }));
+            updateState(body); setMessage("High Resolution updated.");
+        } catch (error) { setMessage(`High Resolution: ${error.message}`, true); render(); }
+    }
+    hiresCadence.onchange = () => updateHires("cadence", {cadence: hiresCadence.value});
+    deleteHires.onclick = () => {
+        if (confirm("Delete this card's hires outputs? Dependent hires outputs will be invalidated.")) updateHires("delete");
+    };
     useAcceptedMaster.onclick = () => setContinuationSource("accepted_master");
     useRefined.onclick = () => setContinuationSource("derivative");
     removeDraft.onclick = () => {
@@ -3198,9 +3279,19 @@ app.registerExtension({
         }
         if (nodeData.name !== "LongCasterProject") return;
 
+        const hiresDefinitions = nodeData.input?.optional || {};
+        // The normal Queue button bypasses queueAction. Repair before the base
+        // serializer snapshots widgets for either queueing or saving.
+        const originalSerialize = nodeType.prototype.serialize;
+        nodeType.prototype.serialize = function () {
+            repairHiresWidgetDefaults(this, hiresDefinitions);
+            return originalSerialize?.apply(this, arguments);
+        };
+
         const originalCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             const result = originalCreated?.apply(this, arguments);
+            repairHiresWidgetDefaults(this, hiresDefinitions);
             const action = widget(this, "action");
             if (action) action.value = "resume";
             const project = widget(this, "project_name");
@@ -3228,6 +3319,7 @@ app.registerExtension({
         nodeType.prototype.onConfigure = function () {
             const result = originalConfigured?.apply(this, arguments);
             repairContinuationTreatmentWidgetOrder(this);
+            repairHiresWidgetDefaults(this, hiresDefinitions);
             return result;
         };
 

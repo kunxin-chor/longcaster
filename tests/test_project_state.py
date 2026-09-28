@@ -100,7 +100,8 @@ class ProjectStateInputTests(unittest.TestCase):
         comfy = types.ModuleType("comfy")
         comfy.samplers = samplers
         with patch.dict(sys.modules, {"comfy": comfy, "comfy.samplers": samplers}):
-            input_types = self.nodes.LongCasterProject.INPUT_TYPES()
+            with patch.object(self.nodes, "hires_model_names", return_value=["test.safetensors"]):
+                input_types = self.nodes.LongCasterProject.INPUT_TYPES()
             required = input_types["required"]
         self.assertEqual(
             list(required)[-4:],

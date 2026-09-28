@@ -1,5 +1,24 @@
 # LongCaster project format
 
+## Schema 22: accepted-card hires derivatives
+
+Schema 21 migrates to 22 by adding `hires_cadence: "manual"`. Existing native/refine records are preserved. Supported hires cadences are `manual` and `off`; auto-after-accept is gated on manual seam validation.
+
+`card.derivatives` distinguishes Stage 3A `type: "refine"` from `type: "hires_refine"`. Hires records have `PROCESSING`, `READY`, `FAILED`, or `INVALIDATED` status and include:
+
+- UUID, source card UUID, native master path and SHA-256.
+- Source/target width and height, effective scale, alignment 32.
+- Upscaler checkpoint name, implementation version, detected architecture/config and checkpoint SHA-256; temporal chunking, effective bf16/fp16 precision, mandatory unload.
+- `hires_parent_derivative_id` and `hires_parent_sha256`, both null for independent/Image Restart cards.
+- Frozen recipe (accepted source recipe plus explicit hires model/sigma provenance and seed), artifact path/hash, prefix protection, DC diagnostics and `audio_handling: "locked_native_audio"`.
+- Creation/start/completion timestamps, execution duration, last error, phase timing/VRAM diagnostics, and optional separately hashed preview.
+
+Artifacts live at `derivatives/<card UUID>/hires_<derivative UUID>.mmh3`; optional silent previews use the same basename with `.mp4`. They never overwrite `clips/` masters or participate in `continuation_source_preference`. The native resolver accepts only normal refine derivatives.
+
+`begin_hires_refine`, `finish_hires_refine`, `fail_hires_refine`, `latest_ready_hires`, and `hires_parent` manage a separate dependency chain. A direct child requires its generation parent's ready hires artifact with matching dimensions. Runtime use/export verifies native, derivative, and ancestor hashes. Completion replaces previous ready hires and invalidates dependent hires topologically without touching native cards. Failure preserves a previous ready chain. Native unpublish/invalidation removes its own hires artifacts and invalidates any surviving dependents. Delete removes only project-owned derivative assets. Duplicate rewrites native-source and hires-parent hashes for the copied archives.
+
+Hires jobs use `pending_operation.kind: "hires_refine"`, sharing the project operation lock. Cancellation/restart marks an unfinished derivative failed, preserving accepted status and native source preference. Successful results are committed only to the transaction's dedicated derivative destination.
+
 ## Directory layout
 
 ```text
@@ -27,13 +46,13 @@
 
 ## Manifest
 
-`project.json` schema version 21 contains project-wide fixed settings and a list of cards. Schema 1–20 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, project prompt-template, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 22 contains project-wide fixed settings and a list of cards. Schema 1-21 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, project prompt-template, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `21`. |
+| `schema_version` | Manifest schema, currently `22`. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |
