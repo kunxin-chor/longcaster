@@ -191,6 +191,8 @@ def _card_summary(
     return {
         "id": card["id"],
         "timeline_index": card["timeline_index"],
+        "organization_timeline_id": card.get("organization_timeline_id"),
+        "generation_folder_id": card.get("generation_folder_id"),
         "artifact_number": card["artifact_number"],
         "status": card["status"],
         "render_validity": (
@@ -306,6 +308,8 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "message": message,
         "project": manifest["project_name"],
         "revision": manifest["revision"],
+        "organization_timelines": manifest.get("organization_timelines", []),
+        "generation_folders": manifest.get("generation_folders", []),
         "generation_mode": manifest["generation_mode"],
         "refine_cadence": manifest.get("refine_cadence", "off"),
         "hires_cadence": manifest.get("hires_cadence", "manual"),
@@ -318,11 +322,8 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
             not manifest.get("pending_operation")
             and (
                 all(card.get("status") == "INVALIDATED" for card in manifest["cards"])
-                or (
-                    len(manifest["cards"]) == 1
-                    and manifest["cards"][0].get("status") in {"EMPTY", "FAILED"}
-                    and not manifest["cards"][0].get("artifact_sha256")
-                )
+                or all(card.get("status") in {"EMPTY", "FAILED"} and not card.get("artifact_sha256")
+                       for card in manifest["cards"])
             )
         ),
         "active_card_id": manifest["active_card_id"],
@@ -334,9 +335,8 @@ def _cards_state(store: ProjectStore, manifest: dict[str, Any], message: str = "
         "active_identity_anchors": manifest.get("active_identity_anchors", {}),
         "identity_anchors": _identity_anchors(store, manifest),
         "generation_mode_editable": (
-            len(manifest["cards"]) == 1
-            and manifest["cards"][0]["status"] in {"EMPTY", "FAILED"}
-            and not manifest["cards"][0].get("artifact_sha256")
+            all(card["status"] in {"EMPTY", "FAILED"} and not card.get("artifact_sha256")
+                for card in manifest["cards"])
             and not manifest.get("pending_operation")
         ),
         "project_folder": f"output/longcaster_projects/{manifest['project_name']}",
@@ -533,6 +533,7 @@ async def update_cards_card(request: web.Request) -> web.Response:
             ref_image_size=payload.get("ref_image_size"),
             card_reference_settings=payload.get("card_reference_settings"),
             continuation_strategy=payload.get("continuation_strategy"),
+            generation_parent_id=(payload.get("generation_parent_id") or "") if "generation_parent_id" in payload else None,
             color_anchor_source_card_id=payload.get("color_anchor_source_card_id"),
             identity_anchor_overrides=payload.get("identity_anchor_overrides"),
             lora_stack=payload.get("lora_stack"),
@@ -541,6 +542,32 @@ async def update_cards_card(request: web.Request) -> web.Response:
             import_prompt=payload.get("import_prompt"),
         )
         return web.json_response(_cards_state(store, manifest, "Card saved."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def create_blank_card(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.create_blank_card(
+            expected_revision=int(payload.get("revision", -1)),
+            folder_id=payload.get("folder_id"),
+        )
+        return web.json_response(_cards_state(store, manifest, "Blank card created."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def activate_cards_card(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.activate_card(
+            expected_revision=int(payload.get("revision", -1)),
+            card_id=str(payload.get("card_id", "")),
+        )
+        return web.json_response(_cards_state(store, manifest, "Card ready to edit."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
@@ -586,6 +613,33 @@ async def copy_cards_sections(request: web.Request) -> web.Response:
             expected_revision=int(payload.get("revision", -1)),
         )
         return web.json_response(_cards_state(store, manifest, "Prompt section copied."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def manage_generation_folder(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.organize_generation_folder(
+            expected_revision=int(payload.get("revision", -1)), action=payload.get("action"),
+            folder_id=payload.get("folder_id"), name=payload.get("name"), card_id=payload.get("card_id"),
+        )
+        return web.json_response(_cards_state(store, manifest, "Generation folder updated."))
+    except (OSError, TypeError, ValueError, ProjectError) as exc:
+        return _error_response(exc)
+
+
+async def manage_organization_timeline(request: web.Request) -> web.Response:
+    try:
+        payload = await request.json()
+        store = ProjectStore(_projects_root(), str(payload.get("project", "")))
+        manifest = store.organize_timeline(
+            expected_revision=int(payload.get("revision", -1)),
+            action=payload.get("action"), timeline_id=payload.get("timeline_id"),
+            name=payload.get("name"), card_id=payload.get("card_id"),
+        )
+        return web.json_response(_cards_state(store, manifest, "Timeline organization updated."))
     except (OSError, TypeError, ValueError, ProjectError) as exc:
         return _error_response(exc)
 
@@ -926,6 +980,10 @@ def register_routes() -> bool:
     instance.routes.get("/longcaster/cards/state")(get_cards_state)
     instance.routes.patch("/longcaster/cards/project")(update_cards_project)
     instance.routes.patch("/longcaster/cards/card")(update_cards_card)
+    instance.routes.post("/longcaster/cards/blank")(create_blank_card)
+    instance.routes.post("/longcaster/cards/activate")(activate_cards_card)
+    instance.routes.post("/longcaster/cards/timelines")(manage_organization_timeline)
+    instance.routes.post("/longcaster/cards/generation-folders")(manage_generation_folder)
     instance.routes.get("/longcaster/cards/loras")(list_card_loras)
     instance.routes.post("/longcaster/cards/invalidate-tail")(invalidate_cards_tail)
     instance.routes.post("/longcaster/cards/reference")(upload_card_reference)

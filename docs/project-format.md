@@ -1,5 +1,27 @@
 # LongCaster project format
 
+## Schema 24: independent generation folders
+
+Schema 23 migrates by adding `generation_folders: []`, preserving all existing timeline groups, card records and archives. Schema 22 receives both optional collections. The Timeline window uses the existing `organization_timelines` and `organization_timeline_id` fields; they are not renamed or moved into generation folders.
+
+`generation_folders` contains `{id, name}` records. Each card's optional `generation_folder_id` is null/missing or refers to one of these records. Membership and name validation follow the same rules as organizational timelines, with separate namespaces. Append inherits both memberships independently; deletion clears only the affected membership. Duplication preserves both collections. Neither membership is a render input.
+
+`POST /longcaster/cards/generation-folders` accepts `project`, `revision`, and `action`: `create` (name), `rename` (folder_id, name), `delete` (folder_id), or `assign` (card_id, folder_id or null). Both collections and membership fields are returned in Studio state. The existing `/longcaster/cards/timelines` route remains a timeline operation.
+
+Generation branch history traverses `generation_parent_id` relationships independently of either grouping. Editable cards can select an earlier accepted parent through `PATCH /longcaster/cards/card` using `generation_parent_id` and `continuation_strategy`. A null parent with `independent` starts a new video. Omitting the parent retains the current parent, with the historical timeline-predecessor fallback for legacy clients selecting a continuation. Changing parents dirties an existing draft. New draft takes freeze the parent UUID; selecting a take restores its parent and continuation settings. Invalidated-card advancement preserves the chosen parent.
+
+`POST /longcaster/cards/blank` accepts `project`, `revision`, and `folder_id` (or null). It appends an independent EMPTY card with empty prompt sections, no timeline assignment or render artifacts, and the active card's duration and seed. It makes the new card active while preserving unfinished cards. `POST /longcaster/cards/activate` accepts `project`, `revision`, and `card_id` to resume an unfinished card whose generation parent, if any, is accepted. Both operations use the project lock and reject stale revisions and pending renders. There are no new branch records or editorial ordering fields.
+
+## Schema 23: optional organizational timelines
+
+Schema 22 migrates to 23 by adding `organization_timelines: []`. Existing card records and archives are preserved exactly. Earlier supported schemas migrate through their existing normalization with the same empty collection added.
+
+`organization_timelines` contains `{id, name}` records with stable IDs and nonempty names of at most 100 characters, unique ignoring case. Each card's optional `organization_timeline_id` is null/missing for Unassigned, or references one of these records. Timeline membership is live organizational metadata, outside recipes and take/publication snapshots. Appending inherits the current card's membership; moving any card changes only its membership. Deleting a timeline unassigns its members without removing cards or assets. Duplication retains the groups and memberships within the copied project.
+
+These groups do not change `timeline_index`, generation ancestry, continuation rules, active card, batch/invalidation scope, or export order. They do not implement the generation lines or edit sequences proposed in `production-timelines-plan.md`. No continuation/root constraints are imposed by organizational membership.
+
+`POST /longcaster/cards/timelines` accepts `project`, `revision`, and an `action`: `create` (name), `rename` (timeline_id, name), `delete` (timeline_id), or `assign` (card_id, timeline_id or null). Changes use the project lock, reject stale revisions and pending operations, and return the full Studio state. State includes the timelines and each card's membership.
+
 ## Schema 22: accepted-card hires derivatives
 
 Schema 21 migrates to 22 by adding `hires_cadence: "manual"`. Existing native/refine records are preserved. Supported hires cadences are `manual` and `off`; auto-after-accept is gated on manual seam validation.
@@ -46,13 +68,15 @@ Hires jobs use `pending_operation.kind: "hires_refine"`, sharing the project ope
 
 ## Manifest
 
-`project.json` schema version 22 contains project-wide fixed settings and a list of cards. Schema 1-21 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, project prompt-template, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
+`project.json` schema version 24 contains project-wide fixed settings and a list of cards. Schema 1-21 projects migrate in place by adding or normalizing missing anchor, identity-binding, publication-history, identity-scope, timeline-predecessor, publication-ID, structured-prompt, refine-derivative, continuation-source, per-card refine-policy, project LoRA activation, project prompt-template, draft-take, continuation-strategy, card-reference, drift-treatment, persistent color-baseline-statistics, per-card identity-override, imported-identity, and per-card LoRA-stack fields; MMH3 masters are not changed. Organizational timeline metadata is additive, as described above. A completed legacy card becomes one selected take. The active card is selected by UUID rather than timeline position.
 
 Project fields:
 
 | Field | Meaning |
 |---|---|
-| `schema_version` | Manifest schema, currently `22`. |
+| `schema_version` | Manifest schema, currently `24`. |
+| `generation_folders` | Optional generation-work folders, independent of timeline membership. |
+| `organization_timelines` | Optional named groups, independent of generation and export order. |
 | `project_name` | Safe directory and project name. |
 | `revision` | Monotonic manifest commit counter. |
 | `generation_mode` | `ref2va` or `t2va`. It may change only before the first card is rendered, then becomes fixed. |

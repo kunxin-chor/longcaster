@@ -1,5 +1,17 @@
 # ComfyUI MiniMax H3 LongCaster
 
+## Generations and Timelines
+
+The existing Cards interface is now the **Generations** workspace. Use **New Folder** in its sidebar and the selected card's **Generation folder** dropdown to organize shots. Use **+ Blank Card** inside a folder (including Unassigned), or **New Blank Card** for the folder selected in the sidebar, to create an empty prompt card. Existing unfinished cards are preserved; select one and choose **Edit / Resume Card** to make it active again.
+
+In Card Settings, **Parent card** defaults to **No parent — New video**. Choose any earlier accepted card, including one in another folder, then choose direct MMH3 continuation or Image Restart as usual. Independent shot clears the parent. Parent changes on a rendered draft require Retry before acceptance. The **Generation / Branch History** panel links to the selected source chain and direct descendants. Blank cards start with no timeline assignment and use the active card's duration and seed; their prompts and media start empty.
+
+Choose **Open Timelines Window** to manage timelines in a separate window. Existing timeline groups and assignments are preserved there. Create, rename, delete, collapse and search timeline groups, assign cards using their dropdowns, or choose **Open in Generations** to return to a card's generation controls.
+
+Generation folders and timeline membership are independent. Existing projects start with no generation folders; either membership can remain Unassigned. Appended cards inherit both memberships from their parent. Deleting a group keeps its cards/media and changes only that group's membership. Organization does not change generation parents, active render targets, batch/invalidation scope, preview/export order, refinement or hires ancestry. Editorial reordering is not enabled yet.
+
+Further work is described in the [Generations and Timelines implementation plan](docs/generations-and-timelines-plan.md).
+
 ## Per-card High Resolution
 
 Accepted cards can produce separate H3 learned **3D latent upscale + refinement** derivatives. The default 2× scale turns a native `544 × 960` card into `1088 × 1920`. Native masters, native project resolution, and Stage 3A continuation-refine selection remain authoritative for ordinary generation.

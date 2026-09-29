@@ -3,6 +3,8 @@ import { api } from "../../scripts/api.js";
 import { createCardReferenceControls, referenceSettings } from "./card_reference.js";
 import { assemblePictureReferences, createPictureReferenceRail } from "./picture_reference_rail.js";
 import { hiresCardState, repairHiresWidgetDefaults } from "./hires.js";
+import { createTimelineWindow } from "./timeline_window.js";
+import { generationHistory, generationParents, setGenerationParent } from "./generation_history.js";
 
 function widget(node, name) {
     return node.widgets?.find((item) => item.name === name);
@@ -627,6 +629,7 @@ function createCardsWorkspace(node) {
     const root = cardsElement("div", "lc-cards-overlay");
     const style = document.createElement("style");
     style.textContent = `
+        .lc-timeline-tools{display:grid;gap:7px;margin-bottom:12px}.lc-timeline-tools select{min-width:0;width:100%}.lc-timeline-buttons{display:flex;gap:4px;flex-wrap:wrap}.lc-timeline-buttons button{padding:6px!important}.lc-timeline-group{min-width:0;border-top:1px solid #254052;padding:7px 0}.lc-timeline-group summary{cursor:pointer;font-weight:600;overflow-wrap:anywhere;margin-bottom:7px}.lc-card-timeline{display:flex;align-items:center;gap:8px;color:#a9bdca}.lc-card-timeline select{min-width:0;max-width:100%}
         .lc-cards-overlay{position:fixed;inset:0;z-index:10020;background:#08131d;color:#dce8f3;font:13px Inter,system-ui,sans-serif;display:grid;grid-template-rows:auto auto minmax(0,1fr) auto auto}
         .lc-cards-overlay[hidden],.lc-cards-overlay [hidden]{display:none!important}.lc-cards-top{display:flex;align-items:center;gap:12px;padding:10px 14px;background:#0c1c29;border-bottom:1px solid #254052}
         .lc-cards-brand{font-size:20px;font-weight:700;margin-right:8px}.lc-cards-top select,.lc-cards-overlay input,.lc-cards-overlay select,.lc-cards-overlay textarea{background:#0d2131;color:#e7f1f8;border:1px solid #29465b;border-radius:5px;padding:7px;box-sizing:border-box}
@@ -697,9 +700,10 @@ function createCardsWorkspace(node) {
     newPanel.append(field("Project folder name", newName), field("Generation mode", newMode), field("Aspect ratio", newAspect), field("Megapixels (MP)", newMegapixels), field("Resolved size (×32)", newResolution), field("First-card seconds", newDuration), field("Seed", newSeed), createProject, cancelCreate);
 
     const studioTabs = cardsElement("nav", "lc-studio-tabs");
-    const cardViewTab = cardsElement("button", "lc-studio-tab active", "Card");
+    const cardViewTab = cardsElement("button", "lc-studio-tab active", "Generations");
     const projectViewTab = cardsElement("button", "lc-studio-tab", "Project");
-    studioTabs.append(cardViewTab, projectViewTab);
+    const openTimelines = cardsElement("button", "lc-studio-tab", "Open Timelines Window");
+    studioTabs.append(cardViewTab, projectViewTab, openTimelines);
 
     const executionPanel = cardsElement("section", "lc-cards-execution");
     const executionState = cardsElement("span", "lc-cards-execution-state", "Idle");
@@ -715,18 +719,39 @@ function createCardsWorkspace(node) {
 
     const main = cardsElement("div", "lc-cards-main");
     const sidebar = cardsElement("aside", "lc-cards-sidebar");
+    const generationTools = cardsElement("div", "lc-timeline-tools");
+    const folderManager = document.createElement("select");
+    folderManager.setAttribute("aria-label", "Manage generation folder");
+    const newFolder = cardsElement("button", "", "New Folder");
+    const renameFolder = cardsElement("button", "", "Rename");
+    const deleteFolder = cardsElement("button", "", "Delete");
+    const newBlankCard = cardsElement("button", "", "New Blank Card");
+    const folderButtons = cardsElement("div", "lc-timeline-buttons");
+    folderButtons.append(newFolder, renameFolder, deleteFolder, newBlankCard);
+    generationTools.append(cardsElement("strong", "", "Generation Folders"), folderManager, folderButtons,
+        cardsElement("div", "lc-cards-help", "Folders organize generation work. Branch history follows recorded parents. Timeline groups are in the separate Timelines window."));
     const list = cardsElement("div", "lc-cards-list");
-    sidebar.append(list);
+    sidebar.append(generationTools, list);
     const editor = cardsElement("main", "lc-cards-editor");
     const cardHead = cardsElement("div", "lc-cards-cardhead");
     const previousCard = cardsElement("button", "", "‹");
     const cardTitle = cardsElement("h2", "", "Card");
     const nextCard = cardsElement("button", "", "›");
     const cardStatus = cardsElement("span", "");
+    const cardFolder = document.createElement("select");
+    cardFolder.setAttribute("aria-label", "Generation folder");
+    cardFolder.title = "Move this card to a generation folder, or leave it unassigned.";
+    const cardFolderField = cardsElement("label", "lc-card-timeline", "Generation folder");
+    cardFolderField.append(cardFolder);
+    const generationPanel = cardsElement("details", "lc-timeline-group");
+    generationPanel.append(cardsElement("summary", "", "Generation / Branch History"));
+    const generationLinks = cardsElement("div", "lc-timeline-buttons");
+    generationPanel.append(generationLinks);
     const invalidateRender = cardsElement("button", "lc-cards-invalidate", "Invalidate From This Card");
     const unpublish = cardsElement("button", "lc-cards-unpublish", "Unpublish to Draft");
     const removeDraft = cardsElement("button", "lc-cards-remove", "Remove Draft Card");
-    cardHead.append(previousCard, cardTitle, nextCard, cardStatus, invalidateRender, unpublish, removeDraft);
+    const activateCard = cardsElement("button", "", "Edit / Resume Card");
+    cardHead.append(previousCard, cardTitle, nextCard, cardStatus, activateCard, invalidateRender, unpublish, removeDraft);
     const tabs = cardsElement("div", "lc-cards-tabs");
     const section = cardsElement("section", "lc-cards-section");
     const sectionBar = cardsElement("div", "lc-cards-sectionbar");
@@ -758,7 +783,12 @@ function createCardsWorkspace(node) {
     modeField.append(cardsElement("div", "lc-cards-help", "REF2VA uses the connected reference packet on every card. T2VA is text-only. Mode locks after the first render."));
     const strategyField = cardsElement("div", "lc-cards-field");
     const strategy = document.createElement("select");
-    for (const [value, label] of [["direct_mmh3", "Continue previous card (direct MMH3)"], ["image_restart", "Image restart (previous last frame)"], ["independent", "Independent shot"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; strategy.append(option); }
+    for (const [value, label] of [["direct_mmh3", "Continue parent card (direct MMH3)"], ["image_restart", "Image restart (parent last frame)"], ["independent", "Independent shot"]]) { const option = document.createElement("option"); option.value = value; option.textContent = label; strategy.append(option); }
+    const generationParent = document.createElement("select");
+    generationParent.setAttribute("aria-label", "Parent card");
+    const parentField = cardsElement("div");
+    parentField.append(cardsElement("label", "", "Parent card"), generationParent,
+        cardsElement("div", "lc-cards-help", "Start a new video or choose an earlier accepted card from any folder. Then select the continuation strategy."));
     strategyField.append(cardsElement("label", "", "Continuation strategy"), strategy);
     strategyField.append(cardsElement("div", "lc-cards-help", "Direct MMH3 preserves the accepted parent’s final 39 joint audio/video latent frames. Image Restart creates a fresh latent and guides frame 0 with the predecessor’s final image. Independent starts without a generation parent."));
     const treatmentField = cardsElement("div", "lc-cards-field");
@@ -815,7 +845,7 @@ function createCardsWorkspace(node) {
         cardsElement("div", "lc-cards-help", "Applied in order by the LongCaster Card LoRAs node before ModelSampling and PDD. Activation words are injected only for enabled non-zero entries."),
         cardLoraList,
     );
-    fields.append(durationField, seedField, modeField, strategyField, treatmentField, colorBaselineField, identityOverridesField, refImageSizeField, refineCadenceField, refineEnabledField, cardLoraField);
+    fields.append(durationField, seedField, modeField, parentField, strategyField, treatmentField, colorBaselineField, identityOverridesField, refImageSizeField, refineCadenceField, refineEnabledField, cardLoraField);
     const cardReferenceControls = createCardReferenceControls({
         assetURL: path => api.apiURL(path),
         onSettings(settings) {
@@ -858,7 +888,7 @@ function createCardsWorkspace(node) {
     pictureRail.root.id = `lc-picture-rail-${node.id}`;
     pictureToggle.setAttribute("aria-controls", pictureRail.root.id);
     editing.append(fullPanel, sectionColumn, pictureRail.root);
-    editor.append(cardHead, editing, legacy, fields);
+    editor.append(cardHead, cardFolderField, generationPanel, editing, legacy, fields);
 
     const preview = cardsElement("aside", "lc-cards-preview");
     preview.append(cardsElement("h3", "", "Card Preview"));
@@ -1032,11 +1062,23 @@ function createCardsWorkspace(node) {
         activeView: "card", identitySourceCardId: null, viewedTakeId: null,
         pictureRailOpen, batch: null, draftBatch: null, projectPreviewClips: [], projectPreviewIndex: -1,
         availableLoras: [], loraCatalogLoaded: false,
+        managedFolderId: null, closedFolders: new Set(), organizationBusy: false,
     };
     node.longcasterCardsWorkspace = workspace;
     node.graph.longcasterProjectAuthority = node;
 
     const selectedCard = () => workspace.state?.cards?.find((card) => card.id === workspace.selectedCardId);
+    const timelineWindow = createTimelineWindow({
+        onChange: payload => organizeCards(payload, "timeline"),
+        onOpenCard: async (cardId, project) => {
+            if (!await flush() || workspace.state?.project !== project || !workspace.state.cards.some(card => card.id === cardId)) return false;
+            workspace.selectedCardId = cardId;
+            workspace.viewedTakeId = selectedCard()?.selected_draft_take_id || null;
+            workspace.closedFolders.delete(selectedCard()?.generation_folder_id || null);
+            workspace.activeView = "card"; root.hidden = false; render();
+            return true;
+        },
+    });
     const viewedTake = (card = selectedCard()) => card?.draft_takes?.find((take) => take.id === workspace.viewedTakeId);
     const identitySourceCard = () => workspace.state?.cards?.find((card) => card.id === workspace.identitySourceCardId && card.status === "ACCEPTED");
     const editable = (card) => Boolean(card && !workspace.batch?.active && !workspace.referenceBusy && !workspace.state?.pending_operation && card.id === workspace.state?.active_card_id && ["EMPTY", "DRAFT", "FAILED", "INVALIDATED"].includes(card.status));
@@ -1355,6 +1397,8 @@ function createCardsWorkspace(node) {
         if (workspace.state?.project && workspace.state.project !== state.project) {
             workspace.loraDirty = false;
             workspace.templatesDirty = false;
+            workspace.managedFolderId = null;
+            workspace.closedFolders.clear();
         }
         if (!workspace.templatesDirty || projectChanged) {
             workspace.templateDraft = cloneTemplates(state.prompt_templates);
@@ -1377,7 +1421,8 @@ function createCardsWorkspace(node) {
         const state = workspace.state;
         if (!state) return;
         const card = selectedCard();
-        const batchActive = Boolean(workspace.batch?.active || workspace.draftBatch?.active);
+        const batchActive = Boolean(workspace.batch?.active || workspace.draftBatch?.active || workspace.organizationBusy);
+        timelineWindow.update(state, {locked: batchActive || Boolean(state.pending_operation) || workspace.organizationBusy});
         hiresCadence.value = state.hires_cadence || "manual";
         hiresCadence.disabled = Boolean(state.pending_operation) || batchActive;
         const showingCard = workspace.activeView === "card";
@@ -1412,7 +1457,59 @@ function createCardsWorkspace(node) {
             : "To change resolution, invalidate all cards first.";
         resolutionLock.className = state.resolution_editable ? "lc-cards-help" : "lc-project-resolution-lock";
         renderProjectResolutionChoice();
+        const timelines = state.generation_folders || [];
+        if (!timelines.some((item) => item.id === workspace.managedFolderId)) {
+            workspace.managedFolderId = timelines[0]?.id || null;
+        }
+        folderManager.replaceChildren();
+        cardFolder.replaceChildren();
+        const unassignedOption = document.createElement("option");
+        unassignedOption.value = ""; unassignedOption.textContent = "Folder: Unassigned";
+        cardFolder.append(unassignedOption);
+        if (!timelines.length) {
+            const option = document.createElement("option");
+            option.value = ""; option.textContent = "No generation folders yet";
+            folderManager.append(option);
+        }
+        for (const timeline of timelines) {
+            const option = document.createElement("option");
+            option.value = timeline.id; option.textContent = timeline.name;
+            folderManager.append(option);
+            const assignment = option.cloneNode(true);
+            assignment.textContent = `Folder: ${timeline.name}`;
+            cardFolder.append(assignment);
+        }
+        folderManager.value = workspace.managedFolderId || "";
+        cardFolder.value = card?.generation_folder_id || "";
+        const organizationLocked = batchActive || Boolean(state.pending_operation) || workspace.organizationBusy;
+        newFolder.disabled = organizationLocked;
+        newBlankCard.disabled = organizationLocked || workspace.referenceBusy;
+        newBlankCard.title = "Create a blank card in the selected folder (or Unassigned if there are no folders).";
+        folderManager.disabled = organizationLocked || !timelines.length;
+        renameFolder.disabled = deleteFolder.disabled = organizationLocked || !workspace.managedFolderId;
+        cardFolder.disabled = organizationLocked || !card;
         list.replaceChildren();
+        const groupLists = new Map();
+        for (const timeline of [{id: null, name: "Unassigned"}, ...timelines]) {
+            const members = state.cards.filter((item) => (item.generation_folder_id || null) === timeline.id);
+            const group = cardsElement("details", "lc-timeline-group");
+            group.open = !workspace.closedFolders.has(timeline.id);
+            group.append(cardsElement("summary", "", `${timeline.name} (${members.length})`));
+            const contents = cardsElement("div", "lc-cards-list");
+            const addBlank = cardsElement("button", "", "+ Blank Card");
+            addBlank.disabled = organizationLocked || workspace.referenceBusy;
+            addBlank.onclick = () => changeActiveCard("blank", {folder_id: timeline.id});
+            contents.append(addBlank);
+            if (!members.length) contents.append(cardsElement("div", "lc-cards-help", "No cards in this folder."));
+            group.append(contents);
+            group.addEventListener("toggle", () => {
+                if (!group.isConnected) return;
+                if (group.open) workspace.closedFolders.delete(timeline.id);
+                else workspace.closedFolders.add(timeline.id);
+            });
+            groupLists.set(timeline.id, contents);
+            list.append(group);
+        }
         for (const item of state.cards || []) {
             const row = cardsElement("div", "lc-card-row");
             const button = cardsElement("button", `lc-card-item${item.id === card?.id ? " selected" : ""}`);
@@ -1434,10 +1531,36 @@ function createCardsWorkspace(node) {
                 }
             };
             row.append(button, copyPrompt);
-            list.append(row);
+            groupLists.get(item.generation_folder_id || null).append(row);
         }
         if (!card) return;
-        const isEditable = editable(card) && !workspace.draftBatch?.active;
+        generationLinks.replaceChildren();
+        const history = generationHistory(state.cards, card.id);
+        const historyLink = (item, prefix = "") => {
+            const button = cardsElement("button", "", `${prefix}Card ${item.timeline_index + 1}`);
+            button.title = item.title || item.id;
+            button.onclick = async () => {
+                if (!await flush()) return;
+                workspace.selectedCardId = item.id;
+                workspace.viewedTakeId = item.selected_draft_take_id || null;
+                workspace.closedFolders.delete(item.generation_folder_id || null);
+                render();
+            };
+            return button;
+        };
+        generationLinks.append(cardsElement("span", "lc-cards-help", "Recorded source chain:"));
+        for (const [index, item] of history.ancestry.entries()) {
+            if (index) generationLinks.append(cardsElement("span", "", "→"));
+            generationLinks.append(historyLink(item));
+        }
+        generationLinks.append(cardsElement("span", "lc-cards-help", `Source mode: ${card.continuation_strategy || "independent"}.`));
+        if (history.missingId || history.cycle) generationLinks.append(cardsElement("span", "lc-cards-error", "Source history is incomplete or cyclic."));
+        if (history.children.length) {
+            generationLinks.append(cardsElement("span", "lc-cards-help", "Direct descendants:"));
+            for (const child of history.children) generationLinks.append(historyLink(child));
+        }
+        generationLinks.append(cardsElement("span", "lc-cards-help", "Choose the parent of an editable card in Card Settings to create a continuation branch."));
+        const isEditable = editable(card) && !workspace.draftBatch?.active && !workspace.organizationBusy;
         let take = viewedTake(card);
         if (!take && card.selected_draft_take_id) {
             workspace.viewedTakeId = card.selected_draft_take_id;
@@ -1552,7 +1675,26 @@ function createCardsWorkspace(node) {
                 : isEditable ? "Refine this card immediately after acceptance." : "Accepted cards are read-only.";
         subjectRefine.hidden = workspace.selectedSection !== "subject_definitions";
         strategy.value = card.continuation_strategy || "independent";
-        strategy.disabled = !isEditable || !card.timeline_predecessor_id;
+        generationParent.replaceChildren();
+        const freshVideo = document.createElement("option");
+        freshVideo.value = ""; freshVideo.textContent = "No parent — New video";
+        generationParent.append(freshVideo);
+        const parents = generationParents(state.cards, card);
+        if (card.generation_parent_id && !parents.some(item => item.id === card.generation_parent_id)) {
+            const unavailable = document.createElement("option");
+            unavailable.value = card.generation_parent_id; unavailable.textContent = "Parent awaiting regeneration";
+            unavailable.disabled = true; generationParent.append(unavailable);
+        }
+        for (const parent of parents) {
+            const option = document.createElement("option");
+            option.value = parent.id; option.textContent = `Card ${parent.timeline_index + 1} · ${parent.title || "Untitled card"}`;
+            generationParent.append(option);
+        }
+        generationParent.value = card.generation_parent_id || "";
+        generationParent.disabled = !isEditable;
+        strategy.disabled = !isEditable || !card.generation_parent_id;
+        activateCard.hidden = card.id === state.active_card_id || card.status === "ACCEPTED";
+        activateCard.disabled = organizationLocked || workspace.referenceBusy || Boolean(card.generation_parent_id && !parents.some(item => item.id === card.generation_parent_id));
         generate.disabled = batchActive || card.id !== state.active_card_id || !["EMPTY", "FAILED", "INVALIDATED"].includes(card.status) || Boolean(state.pending_operation);
         queueDrafts.disabled = generate.disabled;
         draftCount.disabled = batchActive;
@@ -1591,8 +1733,8 @@ function createCardsWorkspace(node) {
         removeDraft.title = state.cards.length < 2
             ? "The first card cannot be removed because there is no previous accepted card."
             : card.has_publication_history
-                ? "Permanently discard this draft and all of its prior publication history, then return to the previous accepted card."
-                : "Discard this unaccepted card and return to the previous accepted card.";
+                ? "Permanently discard this draft and all of its prior publication history, then return to the previous card."
+                : "Discard this unaccepted card and return to the previous card.";
         const viewedPreviewAvailable = take ? take.preview_available : card.preview_available;
         if (viewedPreviewAvailable) {
             const previewQuery = new URLSearchParams({
@@ -2101,6 +2243,7 @@ function createCardsWorkspace(node) {
             ref_image_size: card.ref_image_size || "match",
             card_reference_settings: workspace.state.generation_mode === "ref2va" ? referenceSettings(card.card_reference) : null,
             continuation_strategy: card.continuation_strategy,
+            generation_parent_id: card.generation_parent_id || null,
             color_anchor_source_card_id: card.color_anchor_source_card_id,
             identity_anchor_overrides: card.identity_anchor_overrides || {},
             lora_stack: card.lora_stack || [],
@@ -2951,13 +3094,13 @@ function createCardsWorkspace(node) {
     };
     strategy.onchange = () => {
         const card = selectedCard();
-        card.continuation_strategy = strategy.value;
-        if (strategy.value === "direct_mmh3") {
-            const predecessor = workspace.state.cards.find((item) => item.id === card.timeline_predecessor_id);
-            card.color_anchor_source_card_id = predecessor?.color_anchor_source_card_id || predecessor?.id || card.id;
-        } else {
-            card.color_anchor_source_card_id = card.id;
-        }
+        const parent = strategy.value === "independent" ? null : workspace.state.cards.find(item => item.id === card.generation_parent_id);
+        setGenerationParent(card, parent, strategy.value);
+        markDirty();
+        render();
+    };
+    generationParent.onchange = () => {
+        setGenerationParent(selectedCard(), workspace.state.cards.find(item => item.id === generationParent.value));
         markDirty();
         render();
     };
@@ -3066,6 +3209,81 @@ function createCardsWorkspace(node) {
             updateState(body); setMessage("Flat prompt converted and the historical panel was removed.");
         } catch (error) { setMessage(`Conversion failed: ${error.message}`, true); }
     };
+    async function changeActiveCard(action, payload) {
+        if (workspace.organizationBusy || workspace.batch?.active || workspace.draftBatch?.active || workspace.state?.pending_operation) return;
+        workspace.organizationBusy = true;
+        const project = workspace.state.project;
+        try {
+            if (!await flush() || workspace.state.project !== project) return;
+            render();
+            const body = await responseJson(await api.fetchApi(`/longcaster/cards/${action}`, {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({...payload, project, revision: workspace.state.revision}),
+            }));
+            if (workspace.state.project !== project || workspace.requestedProject !== project) return;
+            const active = body.cards.find(item => item.id === body.active_card_id);
+            workspace.closedFolders.delete(active?.generation_folder_id || null);
+            workspace.activeView = "card";
+            updateState(body, false);
+            setMessage(body.message);
+        } catch (error) {
+            if (workspace.state.project === project) setMessage(`Card update failed: ${error.message}`, true);
+        } finally {
+            workspace.organizationBusy = false;
+            render();
+        }
+    }
+    newBlankCard.onclick = () => changeActiveCard("blank", {folder_id: workspace.managedFolderId});
+    activateCard.onclick = () => changeActiveCard("activate", {card_id: selectedCard()?.id});
+    function organizeGenerationFolder(payload) { return organizeCards(payload, "folder"); }
+    async function organizeCards(payload, kind) {
+        if (workspace.organizationBusy) return {ok: false, message: "Another organization change is saving."};
+        if (payload.project && payload.project !== workspace.state.project) return {ok: false, message: "Project changed; please try again."};
+        workspace.organizationBusy = true;
+        const project = workspace.state.project;
+        try {
+            if (!await flush() || workspace.state.project !== project) return {ok: false, message: "Save pending changes before organizing cards."};
+            render();
+            const endpoint = kind === "timeline" ? "/longcaster/cards/timelines" : "/longcaster/cards/generation-folders";
+            const body = await responseJson(await api.fetchApi(endpoint, {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({...payload, project, revision: workspace.state.revision}),
+            }));
+            if (workspace.state.project !== project || workspace.requestedProject !== project) return {ok: false, message: "Project changed."};
+            if (kind === "folder" && payload.action === "create") {
+                workspace.managedFolderId = body.generation_folders.at(-1)?.id || null;
+            }
+            if (kind === "folder" && payload.action === "assign") workspace.closedFolders.delete(payload.folder_id);
+            updateState(body);
+            setMessage(body.message);
+            return {ok: true, message: body.message};
+        } catch (error) {
+            if (workspace.state.project === project) setMessage(`Organization update failed: ${error.message}`, true);
+            return {ok: false, message: error.message};
+        } finally {
+            workspace.organizationBusy = false;
+            render();
+        }
+    }
+    folderManager.onchange = () => { workspace.managedFolderId = folderManager.value || null; render(); };
+    newFolder.onclick = () => {
+        const name = prompt("Generation folder name");
+        if (name !== null) organizeGenerationFolder({action: "create", name});
+    };
+    renameFolder.onclick = () => {
+        const timeline = workspace.state.generation_folders.find((item) => item.id === workspace.managedFolderId);
+        if (!timeline) return;
+        const name = prompt("Generation folder name", timeline.name);
+        if (name !== null) organizeGenerationFolder({action: "rename", folder_id: timeline.id, name});
+    };
+    deleteFolder.onclick = () => {
+        const timeline = workspace.state.generation_folders.find((item) => item.id === workspace.managedFolderId);
+        if (timeline && confirm(`Delete generation folder "${timeline.name}"? Its cards will become Unassigned. Media and timeline membership will be kept.`)) {
+            organizeGenerationFolder({action: "delete", folder_id: timeline.id});
+        }
+    };
+    cardFolder.onchange = () => organizeGenerationFolder({action: "assign", card_id: selectedCard()?.id, folder_id: cardFolder.value || null});
+    openTimelines.onclick = async () => { if (workspace.state && await flush()) timelineWindow.open(); };
     previousCard.onclick = async () => { const card = selectedCard(); const target = workspace.state.cards[card.timeline_index - 1]; if (target && await flush()) { workspace.selectedCardId = target.id; workspace.viewedTakeId = target.selected_draft_take_id || null; render(); } };
     nextCard.onclick = async () => { const card = selectedCard(); const target = workspace.state.cards[card.timeline_index + 1]; if (target && await flush()) { workspace.selectedCardId = target.id; workspace.viewedTakeId = target.selected_draft_take_id || null; render(); } };
     cardViewTab.onclick = async () => { if (await flush()) { workspace.activeView = "card"; render(); } };
@@ -3130,8 +3348,8 @@ function createCardsWorkspace(node) {
     removeDraft.onclick = () => {
         const card = selectedCard();
         const warning = card?.has_publication_history
-            ? "Permanently remove this draft card and all of its superseded accepted publications, refine derivatives, anchors, and previews? The previous accepted card will become active."
-            : "Remove this unaccepted draft card and return to the previous accepted card? Its draft render and preview will be discarded.";
+            ? "Permanently remove this draft card and all of its superseded accepted publications, refine derivatives, anchors, and previews? The previous card will become active."
+            : "Remove this unaccepted draft card and return to the previous card? Its draft render and preview will be discarded.";
         if (confirm(warning)) runAction("remove_draft");
     };
     newProject.onclick = () => { newPanel.hidden = !newPanel.hidden; if (!newPanel.hidden) newName.focus(); };

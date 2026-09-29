@@ -34,7 +34,7 @@ from .hires import HIRES_CADENCES, AUDIO_HANDLING, resolve_target
 from .hires_project import HiresProjectMixin
 
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 24
 VALID_STATES = {"EMPTY", "DRAFT", "ACCEPTED", "FAILED", "INVALIDATED"}
 IDENTITY_SCOPES = {"face_only", "face_clothing", "face_body", "everything", "custom"}
 GENERATION_MODES = {"ref2va", "t2va"}
@@ -219,6 +219,8 @@ def _new_card(
     return {
         "id": card_id,
         "timeline_index": timeline_index,
+        "organization_timeline_id": None,
+        "generation_folder_id": None,
         "artifact_number": artifact_number,
         "generation_parent_id": parent_id,
         "timeline_predecessor_id": timeline_predecessor_id,
@@ -281,6 +283,7 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
         "ref_image_size": card.get("ref_image_size", "match"),
         "card_reference": deepcopy(card.get("card_reference")),
         "continuation_strategy": card.get("continuation_strategy"),
+        "generation_parent_id": card.get("generation_parent_id"),
         "continuation_source": deepcopy(card.get("continuation_source")),
         "color_anchor_source_card_id": card.get("color_anchor_source_card_id"),
         "identity_anchor_overrides": deepcopy(card.get("identity_anchor_overrides", {})),
@@ -299,7 +302,15 @@ def _take_from_card(card: dict[str, Any], *, artifact_path: str | None = None) -
 
 def _apply_take_to_card(card: dict[str, Any], take: dict[str, Any]) -> None:
     """Restore an immutable take, including its prompt and seed, to the card."""
+    parent_id = take.get("generation_parent_id")
+    if "generation_parent_id" not in take and take["continuation_strategy"] != "independent":
+        parent_id = (
+            (take.get("continuation_source") or {}).get("source_card_id")
+            or (take.get("recipe") or {}).get("generation_parent_id")
+            or card.get("timeline_predecessor_id")
+        )
     card.update({
+        "generation_parent_id": parent_id,
         "prompt": take["prompt"],
         "prompt_format": take["prompt_format"],
         "prompt_sections": deepcopy(take["prompt_sections"]),
@@ -421,6 +432,8 @@ class ProjectStore(HiresProjectMixin):
                 "height": height,
                 "active_card_id": first["id"],
                 "cards": [first],
+                "organization_timelines": [],
+                "generation_folders": [],
                 "active_identity_anchors": {},
                 "imported_identity_anchors": [],
                 "color_baseline_stats": {},
@@ -928,10 +941,7 @@ class ProjectStore(HiresProjectMixin):
                 raise ProjectError("cannot change continuation treatment while an operation is pending")
             if manifest.get("continuation_treatment", "off") != treatment:
                 manifest["continuation_treatment"] = treatment
-                active = self._active_card(manifest)
-                if active.get("status") == "DRAFT":
-                    active["draft_inputs_dirty"] = True
-                    active["updated_at"] = utc_now()
+                self._dirty_all_drafts(manifest)
                 manifest["last_operation"] = {
                     "id": str(uuid.uuid4()), "kind": "set_continuation_treatment",
                     "status": "complete", "ended_at": utc_now(),
@@ -1087,7 +1097,7 @@ class ProjectStore(HiresProjectMixin):
             return deepcopy(manifest)
 
     def remove_draft_tail(self) -> dict[str, Any]:
-        """Discard the active unaccepted tail and return to its accepted predecessor."""
+        """Discard the active unaccepted tail and return to its predecessor."""
         with self.locked():
             manifest = self._load_unlocked()
             if manifest.get("pending_operation"):
@@ -1102,11 +1112,8 @@ class ProjectStore(HiresProjectMixin):
             if len(manifest["cards"]) < 2:
                 raise ProjectError("the first card cannot be removed because there is no previous accepted card")
             predecessor = manifest["cards"][-2]
-            if (
-                card.get("timeline_predecessor_id") != predecessor["id"]
-                or predecessor["status"] != "ACCEPTED"
-            ):
-                raise ProjectError("the removable draft must follow an accepted card")
+            if card.get("timeline_predecessor_id") != predecessor["id"]:
+                raise ProjectError("the removable draft must follow the previous card")
 
             removed_card_id = card["id"]
             publication_history = card.get("publication_history", [])
@@ -1623,9 +1630,11 @@ class ProjectStore(HiresProjectMixin):
             ):
                 return deepcopy(manifest), False
             if next_card.get("continuation_strategy") in {"direct_mmh3", "image_restart"}:
-                next_card["generation_parent_id"] = card["id"]
+                parent = self._card(manifest, next_card["generation_parent_id"])
+                if parent["status"] != "ACCEPTED":
+                    return deepcopy(manifest), False
                 next_card["continuation_source"] = (
-                    self._preferred_source(card)
+                    self._preferred_source(parent)
                     if next_card.get("continuation_strategy") == "direct_mmh3"
                     else None
                 )
@@ -1995,31 +2004,31 @@ class ProjectStore(HiresProjectMixin):
         return active
 
     @staticmethod
+    def _dirty_all_drafts(manifest: dict[str, Any]) -> None:
+        for card in manifest["cards"]:
+            if card.get("status") == "DRAFT":
+                card["draft_inputs_dirty"] = True
+                card["updated_at"] = utc_now()
+
+    @staticmethod
     def _dirty_draft_for_identity_change(
         manifest: dict[str, Any], subject_id: str, *, selection_changed: bool = False
     ) -> None:
-        card = next(
-            (
-                item for item in manifest.get("cards", [])
-                if item.get("id") == manifest.get("active_card_id")
-            ),
-            None,
-        )
-        if (
-            card is not None
-            and card.get("status") == "DRAFT"
-            and (
-                card.get("identity_anchor_overrides", {}).get(subject_id, "project")
-                == "project"
-                or (
-                    selection_changed
-                    and card.get("identity_anchor_overrides", {}).get(subject_id)
-                    == "enabled"
+        for card in manifest.get("cards", []):
+            if (
+                card.get("status") == "DRAFT"
+                and (
+                    card.get("identity_anchor_overrides", {}).get(subject_id, "project")
+                    == "project"
+                    or (
+                        selection_changed
+                        and card.get("identity_anchor_overrides", {}).get(subject_id)
+                        == "enabled"
+                    )
                 )
-            )
-        ):
-            card["draft_inputs_dirty"] = True
-            card["updated_at"] = utc_now()
+            ):
+                card["draft_inputs_dirty"] = True
+                card["updated_at"] = utc_now()
 
     def generation_identity_anchor(self, manifest: dict[str, Any]) -> dict[str, Any] | None:
         """Backward-compatible singular lookup for legacy callers."""
@@ -2253,6 +2262,7 @@ class ProjectStore(HiresProjectMixin):
         ref_image_size: str | None = None,
         card_reference_settings: dict[str, Any] | None = None,
         continuation_strategy: str | None = None,
+        generation_parent_id: str | None = None,
         color_anchor_source_card_id: str | None = None,
         identity_anchor_overrides: dict[str, str] | None = None,
         lora_stack: list[dict[str, Any]] | None = None,
@@ -2278,6 +2288,7 @@ class ProjectStore(HiresProjectMixin):
                 deepcopy(card.get("card_reference")), card.get("color_anchor_source_card_id"),
                 deepcopy(card.get("identity_anchor_overrides", {})),
                 deepcopy(card.get("lora_stack", [])),
+                card.get("generation_parent_id"),
             )
             if card_reference_settings is not None:
                 from .card_reference import validate_reference
@@ -2353,19 +2364,26 @@ class ProjectStore(HiresProjectMixin):
                 if not isinstance(refine_enabled, bool):
                     raise ProjectError("refine_enabled must be boolean")
                 card["refine_enabled"] = refine_enabled
-            if continuation_strategy is not None:
-                strategy = str(continuation_strategy)
+            if continuation_strategy is not None or generation_parent_id is not None:
+                strategy = str(continuation_strategy or card["continuation_strategy"])
                 if strategy not in CONTINUATION_STRATEGIES:
                     raise ProjectError(
                         "continuation_strategy must be independent, direct_mmh3, or image_restart"
                     )
                 if strategy in {"direct_mmh3", "image_restart"}:
-                    predecessor_id = card.get("timeline_predecessor_id")
+                    predecessor_id = (
+                        generation_parent_id if generation_parent_id is not None
+                        else card.get("generation_parent_id") or card.get("timeline_predecessor_id")
+                    )
                     if predecessor_id is None:
                         raise ProjectError("the first card must use independent generation")
+                    if not predecessor_id:
+                        raise ProjectError("select an earlier accepted parent for continuation")
                     predecessor = self._card(manifest, predecessor_id)
                     if predecessor.get("status") != "ACCEPTED":
                         raise ProjectError(f"{strategy} requires an accepted predecessor")
+                    if predecessor["timeline_index"] >= card["timeline_index"]:
+                        raise ProjectError("generation parent must be an earlier accepted card")
                     card["generation_parent_id"] = predecessor_id
                     card["continuation_source"] = (
                         self._preferred_source(predecessor)
@@ -2418,9 +2436,69 @@ class ProjectStore(HiresProjectMixin):
                 card.get("card_reference"), card.get("color_anchor_source_card_id"),
                 card.get("identity_anchor_overrides", {}),
                 card.get("lora_stack", []),
+                card.get("generation_parent_id"),
             ):
                 card["draft_inputs_dirty"] = True
             card["updated_at"] = utc_now()
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def organize_timeline(
+        self, *, expected_revision: int, action: str,
+        timeline_id: str | None = None, name: str | None = None,
+        card_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._organize_cards(
+            expected_revision=expected_revision, action=action, group_id=timeline_id,
+            name=name, card_id=card_id, groups_key="organization_timelines",
+            membership_key="organization_timeline_id", label="organization timeline",
+        )
+
+    def organize_generation_folder(
+        self, *, expected_revision: int, action: str,
+        folder_id: str | None = None, name: str | None = None,
+        card_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._organize_cards(
+            expected_revision=expected_revision, action=action, group_id=folder_id,
+            name=name, card_id=card_id, groups_key="generation_folders",
+            membership_key="generation_folder_id", label="generation folder",
+        )
+
+    def _organize_cards(
+        self, *, expected_revision, action, group_id, name, card_id,
+        groups_key, membership_key, label,
+    ) -> dict[str, Any]:
+        """Change one independent organization layer, never generation inputs."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot organize cards while another operation is pending")
+            if action not in {"create", "rename", "delete", "assign"}:
+                raise ProjectError("unsupported organization action")
+            timelines = manifest.setdefault(groups_key, [])
+            timeline = next((item for item in timelines if item["id"] == group_id), None)
+            if action in {"rename", "delete"} or (action == "assign" and group_id is not None):
+                if timeline is None:
+                    raise ProjectError(f"{label} does not exist")
+            if action in {"create", "rename"}:
+                if not isinstance(name, str) or not 1 <= len(name.strip()) <= 100:
+                    raise ProjectError(f"{label} name must contain 1-100 characters")
+                name = name.strip()
+                if any((action == "create" or item is not timeline) and item["name"].casefold() == name.casefold() for item in timelines):
+                    raise ProjectError(f"a {label} with this name already exists")
+            if action == "create":
+                timelines.append({"id": str(uuid.uuid4()), "name": name})
+            elif action == "rename":
+                timeline["name"] = name
+            elif action == "delete":
+                timelines.remove(timeline)
+                for card in manifest["cards"]:
+                    if card.get(membership_key) == group_id:
+                        card[membership_key] = None
+            else:
+                self._card(manifest, card_id)[membership_key] = group_id
             self._commit_unlocked(manifest)
             return deepcopy(manifest)
 
@@ -2472,9 +2550,8 @@ class ProjectStore(HiresProjectMixin):
             except ValueError as exc:
                 raise ProjectError(str(exc)) from exc
             pristine = (
-                len(manifest["cards"]) == 1
-                and manifest["cards"][0]["status"] in {"EMPTY", "FAILED"}
-                and not manifest["cards"][0].get("artifact_sha256")
+                all(card["status"] in {"EMPTY", "FAILED"} and not card.get("artifact_sha256")
+                    for card in manifest["cards"])
                 and not manifest.get("pending_operation")
             )
             all_invalidated = (
@@ -2508,10 +2585,7 @@ class ProjectStore(HiresProjectMixin):
                 if manifest.get("pending_operation"):
                     raise ProjectError("cannot change continuation treatment while an operation is pending")
                 manifest["continuation_treatment"] = treatment
-                active = self._active_card(manifest)
-                if active.get("status") == "DRAFT":
-                    active["draft_inputs_dirty"] = True
-                    active["updated_at"] = utc_now()
+                self._dirty_all_drafts(manifest)
                 changed = True
             if resolution_changed:
                 manifest["width"] = requested_width
@@ -2523,10 +2597,7 @@ class ProjectStore(HiresProjectMixin):
                         "cannot change LoRA activation words while an operation is pending"
                     )
                 manifest["lora_activation_words"] = activation_words
-                active = self._active_card(manifest)
-                if active.get("status") == "DRAFT":
-                    active["draft_inputs_dirty"] = True
-                    active["updated_at"] = utc_now()
+                self._dirty_all_drafts(manifest)
                 changed = True
             if templates != manifest.get("prompt_templates", []):
                 if manifest.get("pending_operation"):
@@ -2615,6 +2686,57 @@ class ProjectStore(HiresProjectMixin):
                 f"stale project revision: expected {expected_revision}, current {manifest.get('revision')}"
             )
 
+    def create_blank_card(
+        self, *, expected_revision: int, folder_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Create a fresh definition without inheriting another card's prompt or media."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot create a card while another operation is pending")
+            if folder_id is not None and not any(
+                folder["id"] == folder_id for folder in manifest.get("generation_folders", [])
+            ):
+                raise ProjectError("generation folder does not exist")
+            current = self._active_card(manifest)
+            card = _new_card(
+                timeline_index=len(manifest["cards"]),
+                artifact_number=max(
+                    [int(item["artifact_number"]) for item in manifest["cards"]]
+                    + [int(publication["artifact_number"])
+                       for item in manifest["cards"]
+                       for publication in item.get("publication_history", [])]
+                ) + 1,
+                parent_id=None,
+                timeline_predecessor_id=manifest["cards"][-1]["id"],
+                prompt="", duration_seconds=current["requested_duration_seconds"],
+                seed=current["seed"],
+            )
+            card["generation_folder_id"] = folder_id
+            manifest["cards"].append(card)
+            manifest["active_card_id"] = card["id"]
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
+    def activate_card(self, *, card_id: str, expected_revision: int) -> dict[str, Any]:
+        """Resume an unfinished card without altering any other card or its artifacts."""
+        with self.locked():
+            manifest = self._load_unlocked()
+            self._require_revision(manifest, expected_revision)
+            if manifest.get("pending_operation"):
+                raise ProjectError("cannot activate a card while another operation is pending")
+            card = self._card(manifest, card_id)
+            if card["status"] not in {"EMPTY", "DRAFT", "FAILED", "INVALIDATED"}:
+                raise ProjectError("accepted cards are read-only")
+            if card.get("generation_parent_id"):
+                parent = self._card(manifest, card["generation_parent_id"])
+                if parent["status"] != "ACCEPTED":
+                    raise ProjectError("accept the generation parent before activating this card")
+            manifest["active_card_id"] = card_id
+            self._commit_unlocked(manifest)
+            return deepcopy(manifest)
+
     def append(self, *, prompt: str, duration_seconds: float, seed: int) -> dict[str, Any]:
         with self.locked():
             manifest = self._load_unlocked()
@@ -2634,13 +2756,15 @@ class ProjectStore(HiresProjectMixin):
                     ]
                 ) + 1,
                 parent_id=current["id"],
-                timeline_predecessor_id=current["id"],
+                timeline_predecessor_id=manifest["cards"][-1]["id"],
                 prompt=prompt,
                 duration_seconds=duration_seconds,
                 seed=seed,
                 ref_image_size=current.get("ref_image_size", "match"),
             )
             card["continuation_source"] = self._preferred_source(current)
+            card["organization_timeline_id"] = current.get("organization_timeline_id")
+            card["generation_folder_id"] = current.get("generation_folder_id")
             card["color_anchor_source_card_id"] = current.get(
                 "color_anchor_source_card_id", current["id"]
             )
@@ -2957,6 +3081,31 @@ class ProjectStore(HiresProjectMixin):
         cards = manifest.get("cards")
         if not isinstance(cards, list) or not cards:
             raise ProjectError("project must contain at least one card")
+        for groups_key, membership_key, label in (
+            ("organization_timelines", "organization_timeline_id", "organization timeline"),
+            ("generation_folders", "generation_folder_id", "generation folder"),
+        ):
+            timelines = manifest.get(groups_key, [])
+            if not isinstance(timelines, list):
+                raise ProjectError(f"{groups_key} must be a list")
+            timeline_ids: set[str] = set()
+            timeline_names: set[str] = set()
+            for timeline in timelines:
+                if not isinstance(timeline, dict):
+                    raise ProjectError(f"invalid {label}")
+                timeline_id, name = timeline.get("id"), timeline.get("name")
+                if not isinstance(timeline_id, str) or not timeline_id or timeline_id in timeline_ids:
+                    raise ProjectError(f"{label} IDs must be unique nonempty strings")
+                if not isinstance(name, str) or not 1 <= len(name) <= 100 or name != name.strip():
+                    raise ProjectError(f"{label} name must contain 1-100 characters without surrounding whitespace")
+                if name.casefold() in timeline_names:
+                    raise ProjectError(f"{label} names must be unique")
+                timeline_ids.add(timeline_id)
+                timeline_names.add(name.casefold())
+            for card in cards:
+                membership = card.get(membership_key)
+                if membership is not None and (not isinstance(membership, str) or membership not in timeline_ids):
+                    raise ProjectError(f"card {label} does not exist")
         ids: set[str] = set()
         accepted_numbers: set[int] = set()
         anchor_ids: set[str] = set()
@@ -2977,7 +3126,7 @@ class ProjectStore(HiresProjectMixin):
             if predecessor_id is not None and predecessor_id not in ids:
                 raise ProjectError("timeline predecessor must be an earlier card UUID")
             parent_id = card.get("generation_parent_id")
-            if parent_id is not None and parent_id not in ids:
+            if parent_id is not None and (parent_id == card["id"] or parent_id not in ids):
                 raise ProjectError("generation parent must be an earlier card UUID")
             if card.get("status") not in VALID_STATES:
                 raise ProjectError(f"invalid card state: {card.get('status')}")
@@ -3157,6 +3306,8 @@ class ProjectStore(HiresProjectMixin):
                 if card.get("status") == "DRAFT" and selected_take.get("artifact_path") != card.get("draft_path"):
                     raise ProjectError("selected draft take path does not match the current draft")
                 if not card.get("draft_inputs_dirty"):
+                    if "generation_parent_id" in selected_take and selected_take["generation_parent_id"] != parent_id:
+                        raise ProjectError("selected draft take does not match card generation parent")
                     for field in (
                         "prompt", "prompt_format", "prompt_sections", "assembled_prompt",
                         "prompt_hash", "requested_duration_seconds", "seed",
@@ -3433,6 +3584,12 @@ class ProjectStore(HiresProjectMixin):
         version = manifest.get("schema_version")
         if version == SCHEMA_VERSION:
             return False
+        if version in {22, 23}:
+            # Organization is additive: preserve every existing card and frozen recipe.
+            manifest.setdefault("organization_timelines", [])
+            manifest.setdefault("generation_folders", [])
+            manifest["schema_version"] = SCHEMA_VERSION
+            return True
         if version not in {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21}:
             raise ProjectError(f"unsupported project schema: {version}")
         previous_id = None
@@ -3531,6 +3688,8 @@ class ProjectStore(HiresProjectMixin):
         manifest.setdefault("continuation_treatment", "off")
         manifest.setdefault("lora_activation_words", "")
         manifest.setdefault("prompt_templates", [])
+        manifest.setdefault("organization_timelines", [])
+        manifest.setdefault("generation_folders", [])
         manifest["schema_version"] = SCHEMA_VERSION
         return True
 

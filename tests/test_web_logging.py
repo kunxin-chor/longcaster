@@ -1,8 +1,10 @@
 import importlib.util
+import asyncio
 import logging
 from pathlib import Path
 import sys
 import types
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -41,6 +43,75 @@ class WebLoggingTests(unittest.TestCase):
 
     def setUp(self):
         self.events.clear()
+
+    def test_timeline_api_returns_membership_and_rejects_stale_writes(self):
+        from longcaster.project import ProjectError, ProjectStore
+
+        class Request:
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def json(self):
+                return self.payload
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = ProjectStore(root, "organization")
+            initial = store.create(prompt="", duration_seconds=5, seed=1, width=544, height=960, generation_mode="t2va")
+            with (
+                patch.object(self.routes, "_projects_root", return_value=root),
+                patch.object(self.routes, "ProjectStore", ProjectStore),
+                patch.object(self.routes, "ProjectError", ProjectError),
+                patch.object(self.routes.web, "json_response", create=True,
+                             side_effect=lambda data, status=200: (status, data)),
+            ):
+                status, created = asyncio.run(self.routes.manage_organization_timeline(Request({
+                    "project": "organization", "revision": initial["revision"], "action": "create", "name": "Scene 1",
+                })))
+                self.assertEqual(status, 200)
+                timeline_id = created["organization_timelines"][0]["id"]
+                request = Request({
+                    "project": "organization", "revision": created["revision"], "action": "assign",
+                    "timeline_id": timeline_id, "card_id": initial["active_card_id"],
+                })
+                status, assigned = asyncio.run(self.routes.manage_organization_timeline(request))
+                self.assertEqual(status, 200)
+                self.assertEqual(assigned["cards"][0]["organization_timeline_id"], timeline_id)
+                status, folders = asyncio.run(self.routes.manage_generation_folder(Request({
+                    "project": "organization", "revision": assigned["revision"], "action": "create", "name": "Kitchen",
+                })))
+                self.assertEqual(status, 200)
+                folder_id = folders["generation_folders"][0]["id"]
+                status, grouped = asyncio.run(self.routes.manage_generation_folder(Request({
+                    "project": "organization", "revision": folders["revision"], "action": "assign",
+                    "folder_id": folder_id, "card_id": initial["active_card_id"],
+                })))
+                self.assertEqual(status, 200)
+                self.assertEqual(grouped["cards"][0]["generation_folder_id"], folder_id)
+                self.assertEqual(grouped["cards"][0]["organization_timeline_id"], timeline_id)
+                status, error = asyncio.run(self.routes.manage_organization_timeline(request))
+                self.assertEqual(status, 409)
+                self.assertIn("stale project revision", error["error"])
+                status, blank = asyncio.run(self.routes.create_blank_card(Request({
+                    "project": "organization", "revision": grouped["revision"], "folder_id": folder_id,
+                })))
+                self.assertEqual(status, 200)
+                new_card = blank["cards"][-1]
+                self.assertEqual(new_card["id"], blank["active_card_id"])
+                self.assertEqual(new_card["generation_folder_id"], folder_id)
+                self.assertIsNone(new_card["generation_parent_id"])
+                self.assertTrue(blank["resolution_editable"])
+                self.assertTrue(blank["generation_mode_editable"])
+                status, resumed = asyncio.run(self.routes.activate_cards_card(Request({
+                    "project": "organization", "revision": blank["revision"], "card_id": initial["active_card_id"],
+                })))
+                self.assertEqual(status, 200)
+                self.assertEqual(resumed["active_card_id"], initial["active_card_id"])
+                status, error = asyncio.run(self.routes.create_blank_card(Request({
+                    "project": "organization", "revision": blank["revision"], "folder_id": folder_id,
+                })))
+                self.assertEqual(status, 409)
+                self.assertIn("stale project revision", error["error"])
 
     def test_longcaster_log_record_is_forwarded_to_browser_clients(self):
         handler = self.routes._LongCasterWebLogHandler()

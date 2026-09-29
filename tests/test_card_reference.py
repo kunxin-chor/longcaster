@@ -75,7 +75,7 @@ class CardReferenceStoreTests(unittest.TestCase):
         del manifest["cards"][0]["card_reference"]
         self.store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         loaded = self.store.load()
-        self.assertEqual(loaded["schema_version"], 22)
+        self.assertEqual(loaded["schema_version"], 24)
         self.assertIsNone(loaded["cards"][0]["card_reference"])
 
     def test_upload_replace_remove_keep_take_sources(self):

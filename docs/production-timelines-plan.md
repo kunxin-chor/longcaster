@@ -1,6 +1,10 @@
 # Production timelines and future editing
 
+Superseded terminology and rollout: see [Generations and Timelines implementation plan](generations-and-timelines-plan.md). Organizational folders now belong to Generations; continuation root rules belong to branches, and Timelines refers to editorial sequences. The material below records the earlier design and future editing research.
+
 Status: proposed architecture; no runtime changes. Based on the current schema 22 implementation. No workflows were inspected or run for this analysis.
+
+Implementation scope update: the first release implements only optional organizational groups (`organization_timelines` and per-card membership, schema 23). It does not implement the generation-line/root constraints, scoped generation operations or edit sequences proposed below. Those remain future work; organizational groups impose no ancestry changes.
 
 ## Feasibility and confirmed folder rule
 

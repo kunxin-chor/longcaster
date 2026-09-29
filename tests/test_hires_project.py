@@ -57,7 +57,7 @@ class HiresProjectTests(unittest.TestCase):
         original = deepcopy(m["cards"])
         self.store.manifest_path.write_text(json.dumps(m), encoding="utf-8")
         m = self.store.load()
-        self.assertEqual(m["schema_version"], 22)
+        self.assertEqual(m["schema_version"], 24)
         self.assertEqual(m["hires_cadence"], "manual")
         self.assertEqual(m["cards"], original)
 
@@ -95,6 +95,25 @@ class HiresProjectTests(unittest.TestCase):
         card = self.accept(append=True)
         with self.assertRaisesRegex(ProjectError, "Card 2.*requires a ready Card 1"):
             self.begin(card)
+
+    def test_organization_keeps_cross_group_hires_chain_ready(self):
+        parent = self.accept()
+        self.ready(parent)
+        child = self.accept(append=True)
+        self.ready(child)
+        before = self.store.load()
+        grouped = self.store.organize_timeline(
+            expected_revision=before["revision"], action="create", name="Another scene",
+        )
+        grouped = self.store.organize_timeline(
+            expected_revision=grouped["revision"], action="assign", card_id=child["id"],
+            timeline_id=grouped["organization_timelines"][0]["id"],
+        )
+        for old, current in zip(before["cards"], grouped["cards"]):
+            self.assertEqual(current["derivatives"], old["derivatives"])
+            self.assertEqual(current["recipe"], old["recipe"])
+            self.assertIsNotNone(self.store.latest_ready_hires(grouped, current))
+        self.assertEqual(self.store.hires_parent(grouped, grouped["cards"][-1])["id"], before["cards"][0]["derivatives"][-1]["id"])
 
     def test_independent_and_restart_start_new_chains(self):
         self.accept()

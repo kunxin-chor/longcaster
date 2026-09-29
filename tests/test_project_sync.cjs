@@ -25,6 +25,8 @@ function frontend() {
         },
     };
     const context = vm.createContext({ app, api, setTimeout, clearTimeout });
+    const hires = fs.readFileSync(path.join(__dirname, "../web/hires.js"), "utf8");
+    vm.runInContext(hires.replace(/^export /gm, ""), context);
     const source = fs.readFileSync(path.join(__dirname, "../web/longcaster.js"), "utf8");
     vm.runInContext(source.replace(/^import .*;\r?\n/gm, ""), context);
     return { context, extension, queued, api, listeners, fetches };

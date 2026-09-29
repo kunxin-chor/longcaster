@@ -741,7 +741,7 @@ class LongCasterProject:
             return self._result(
                 None,
                 None,
-                _status(manifest, store, "Draft card removed; previous accepted card is active."),
+                _status(manifest, store, "Draft card removed; previous card is active."),
                 store,
             )
 

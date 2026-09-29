@@ -56,6 +56,164 @@ class ProjectStoreTests(unittest.TestCase):
             actual_duration_seconds=124 / 24,
         )
 
+    def _blank(self, folder_id=None):
+        return self.store.create_blank_card(
+            expected_revision=self.store.load()["revision"], folder_id=folder_id,
+        )
+
+    def _parent(self, parent_id, strategy="direct_mmh3"):
+        manifest = self.store.load()
+        return self.store.update_card_editor(
+            card_id=manifest["active_card_id"], expected_revision=manifest["revision"],
+            generation_parent_id=parent_id, continuation_strategy=strategy,
+        )
+
+    def test_blank_card_is_empty_in_selected_folder_and_preserves_unfinished_card(self):
+        self._draft()
+        folder = self._folder("create", name="New scene")["generation_folders"][0]
+        before = self.store.load()
+        manifest = self._blank(folder["id"])
+        card = self.store.active_card(manifest)
+        self.assertEqual(manifest["cards"][0], before["cards"][0])
+        self.assertEqual(card["generation_folder_id"], folder["id"])
+        self.assertIsNone(card["organization_timeline_id"])
+        self.assertIsNone(card["generation_parent_id"])
+        self.assertEqual(card["continuation_strategy"], "independent")
+        self.assertTrue(all(not section["text"] for section in card["prompt_sections"].values()))
+        self.assertEqual(card["draft_takes"], [])
+        resumed = self.store.activate_card(card_id=before["active_card_id"], expected_revision=manifest["revision"])
+        self.assertEqual(resumed["cards"], manifest["cards"])
+        self.assertEqual(resumed["active_card_id"], before["active_card_id"])
+
+    def test_blank_card_requires_current_revision_valid_folder_and_no_pending_render(self):
+        with self.assertRaisesRegex(ProjectError, "stale project revision"):
+            self.store.create_blank_card(expected_revision=-1)
+        with self.assertRaisesRegex(ProjectError, "generation folder does not exist"):
+            self._blank("missing")
+        manifest, _ = self.store.begin_generation(
+            action="generate", prompt="", duration_seconds=5, seed=11,
+            recipe={}, fingerprint="pending",
+        )
+        with self.assertRaisesRegex(ProjectError, "pending"):
+            self._blank()
+        with self.assertRaisesRegex(ProjectError, "pending"):
+            self.store.activate_card(card_id=manifest["active_card_id"], expected_revision=manifest["revision"])
+
+    def test_blank_card_parent_can_branch_and_change_strategy_without_changing_order(self):
+        self._draft()
+        first = self.store.accept()["active_card_id"]
+        self._blank()
+        self._draft()
+        second = self.store.accept()["active_card_id"]
+        blank = self._blank()
+        for strategy in ("direct_mmh3", "image_restart"):
+            manifest = self._parent(first, strategy)
+            card = self.store.active_card(manifest)
+            self.assertEqual(card["generation_parent_id"], first)
+            self.assertEqual(card["timeline_predecessor_id"], second)
+            self.assertEqual(card["timeline_index"], 2)
+            if strategy == "direct_mmh3":
+                self.assertEqual(card["continuation_source"]["source_card_id"], first)
+            else:
+                self.assertIsNone(card["continuation_source"])
+        independent = self.store.active_card(self._parent("", "independent"))
+        self.assertIsNone(independent["generation_parent_id"])
+        self.assertEqual(independent["color_anchor_source_card_id"], blank["active_card_id"])
+
+    def test_parent_change_marks_rendered_draft_dirty_even_with_same_color_baseline(self):
+        self._draft()
+        first = self.store.accept()["active_card_id"]
+        self.store.append(prompt="", duration_seconds=5, seed=11)
+        self._draft()
+        second = self.store.accept()["active_card_id"]
+        self._blank()
+        self._parent(first)
+        self._draft()
+        card = self.store.active_card(self._parent(second))
+        self.assertTrue(card["draft_inputs_dirty"])
+        with self.assertRaises(ProjectError):
+            self.store.accept()
+
+    def test_selecting_an_older_take_restores_its_generation_parent(self):
+        self._draft()
+        first = self.store.accept()["active_card_id"]
+        self._blank()
+        self._draft()
+        second = self.store.accept()["active_card_id"]
+        self._blank()
+        self._parent(first, "image_restart")
+        old = self.store.active_card(self._draft())
+        self._parent(second)
+        latest = self._draft(action="retry")
+        restored = self.store.select_draft_take(
+            card_id=old["id"], take_id=old["selected_draft_take_id"],
+            expected_revision=latest["revision"],
+        )
+        card = self.store.active_card(restored)
+        self.assertEqual(card["generation_parent_id"], first)
+        self.assertEqual(card["continuation_strategy"], "image_restart")
+        self.assertIsNone(card["continuation_source"])
+        self.assertFalse(card["draft_inputs_dirty"])
+        self.store.accept()
+
+    def test_shared_setting_changes_dirty_inactive_drafts(self):
+        self._draft()
+        self._blank()
+        self._draft()
+        manifest = self.store.set_continuation_treatment("drift_control")
+        self.assertTrue(all(card["draft_inputs_dirty"] for card in manifest["cards"]))
+
+    def test_parent_rejects_unaccepted_self_later_and_missing_cards(self):
+        first = self.manifest["active_card_id"]
+        blank = self._blank()
+        for parent in (first, blank["active_card_id"], "missing", ""):
+            with self.assertRaises(ProjectError):
+                self._parent(parent)
+        self._draft()
+        later = self.store.accept()["active_card_id"]
+        manifest = self.store.load()
+        self.store.activate_card(card_id=first, expected_revision=manifest["revision"])
+        with self.assertRaisesRegex(ProjectError, "earlier accepted"):
+            self._parent(later)
+
+    def test_blank_tail_can_be_removed_after_an_unfinished_card(self):
+        before = self.store.load()
+        self._blank()
+        removed = self.store.remove_draft_tail()
+        self.assertEqual(removed["cards"], before["cards"])
+        self.assertEqual(removed["active_card_id"], before["active_card_id"])
+
+    def test_blank_cards_do_not_lock_project_resolution_before_rendering(self):
+        manifest = self._blank()
+        updated = self.store.update_project_settings(
+            expected_revision=manifest["revision"], generation_mode="t2va",
+            width=544, height=960,
+        )
+        self.assertEqual(updated["width"], 544)
+        self.assertEqual(updated["generation_mode"], "t2va")
+
+    def test_regenerating_a_branch_preserves_its_selected_parent(self):
+        self._draft()
+        first = self.store.accept()["active_card_id"]
+        self._blank()
+        self._draft()
+        second = self.store.accept()["active_card_id"]
+        self._blank()
+        self._parent(first)
+        self._draft()
+        self.store.accept()
+        self.store.invalidate_all_renders()
+        self._draft()
+        self.store.accept()
+        self.store.activate_next_invalidated(first)
+        self._draft()
+        self.store.accept()
+        manifest, advanced = self.store.activate_next_invalidated(second)
+        self.assertTrue(advanced)
+        card = self.store.active_card(manifest)
+        self.assertEqual(card["generation_parent_id"], first)
+        self.assertEqual(card["continuation_source"]["source_card_id"], first)
+
     def test_generate_accept_append_state_machine(self):
         manifest = self._draft()
         draft = self.store.active_card(manifest)
@@ -73,6 +231,168 @@ class ProjectStoreTests(unittest.TestCase):
         self.assertEqual(current["status"], "EMPTY")
         self.assertEqual(current["generation_parent_id"], accepted["id"])
         self.assertEqual(current["timeline_predecessor_id"], accepted["id"])
+
+    def _organize(self, action, **kwargs):
+        return self.store.organize_timeline(
+            expected_revision=self.store.load()["revision"], action=action, **kwargs,
+        )
+
+    def _folder(self, action, **kwargs):
+        return self.store.organize_generation_folder(
+            expected_revision=self.store.load()["revision"], action=action, **kwargs,
+        )
+
+    def test_generation_folders_and_timelines_are_independent(self):
+        self._draft()
+        accepted = self.store.accept()
+        card_id = accepted["active_card_id"]
+        timeline = self._organize("create", name="Scene 1")["organization_timelines"][0]
+        folder = self._folder("create", name="Scene 1")["generation_folders"][0]
+        self._organize("assign", timeline_id=timeline["id"], card_id=card_id)
+        assigned = self._folder("assign", folder_id=folder["id"], card_id=card_id)
+        self.assertEqual(assigned["cards"][0]["organization_timeline_id"], timeline["id"])
+        self.assertEqual(assigned["cards"][0]["generation_folder_id"], folder["id"])
+        unchanged = {k: v for k, v in assigned["cards"][0].items() if k not in {"organization_timeline_id", "generation_folder_id"}}
+        original = {k: v for k, v in accepted["cards"][0].items() if k not in {"organization_timeline_id", "generation_folder_id"}}
+        self.assertEqual(unchanged, original)
+        with self.assertRaisesRegex(ProjectError, "generation folder does not exist"):
+            self._folder("assign", folder_id=timeline["id"], card_id=card_id)
+        deleted = self._folder("delete", folder_id=folder["id"])
+        self.assertEqual(deleted["cards"][0]["organization_timeline_id"], timeline["id"])
+        self.assertIsNone(deleted["cards"][0]["generation_folder_id"])
+        new_folder = self._folder("create", name="Kitchen")["generation_folders"][0]
+        self._folder("assign", folder_id=new_folder["id"], card_id=card_id)
+        deleted = self._organize("delete", timeline_id=timeline["id"])
+        self.assertEqual(deleted["cards"][0]["generation_folder_id"], new_folder["id"])
+        self.assertIsNone(deleted["cards"][0]["organization_timeline_id"])
+
+    def test_schema_23_keeps_existing_timelines_and_adds_empty_generation_folders(self):
+        created = self._organize("create", name="Existing timeline")
+        assigned = self._organize("assign", card_id=created["active_card_id"], timeline_id=created["organization_timelines"][0]["id"])
+        assigned["schema_version"] = 23
+        assigned.pop("generation_folders")
+        for card in assigned["cards"]:
+            card.pop("generation_folder_id", None)
+        self.store.manifest_path.write_text(json.dumps(assigned), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 24)
+        self.assertEqual(migrated["generation_folders"], [])
+        self.assertEqual(migrated["organization_timelines"], assigned["organization_timelines"])
+        self.assertEqual(migrated["cards"], assigned["cards"])
+
+    def test_generation_folder_inherits_on_append_and_survives_duplication(self):
+        created = self._folder("create", name="Kitchen")
+        folder_id = created["generation_folders"][0]["id"]
+        self._folder("assign", card_id=created["active_card_id"], folder_id=folder_id)
+        duplicate_project(self.root, "film_01", "folder_copy")
+        copied = ProjectStore(self.root, "folder_copy").load()
+        self.assertEqual(copied["generation_folders"], created["generation_folders"])
+        self.assertEqual(copied["cards"][0]["generation_folder_id"], folder_id)
+        self._draft()
+        self.store.accept()
+        appended = self.store.append(prompt="next", duration_seconds=5, seed=12)
+        self.assertEqual(appended["cards"][-1]["generation_folder_id"], folder_id)
+        self.assertIsNone(appended["cards"][-1]["organization_timeline_id"])
+
+    def test_timeline_organization_preserves_accepted_media_and_export_order(self):
+        from longcaster.timeline import selected_cards
+
+        self._draft()
+        accepted = self.store.accept()
+        first = accepted["cards"][0]
+        path = self.store.absolute_path(first["master_path"])
+        original_bytes = path.read_bytes()
+        self.store.append(prompt="second", duration_seconds=5, seed=12)
+        self._draft(prompt="second", seed=12)
+        before = self.store.accept()
+        created = self._organize("create", name=" Scene 2 ")
+        timeline = created["organization_timelines"][0]
+        self.assertEqual(timeline["name"], "Scene 2")
+        assigned = self._organize("assign", card_id=first["id"], timeline_id=timeline["id"])
+        self.assertEqual(assigned["active_card_id"], before["active_card_id"])
+        for old, new in zip(before["cards"], assigned["cards"]):
+            self.assertEqual(
+                {k: v for k, v in old.items() if k != "organization_timeline_id"},
+                {k: v for k, v in new.items() if k != "organization_timeline_id"},
+            )
+        self.assertEqual([c["id"] for c in selected_cards(assigned, False)], [c["id"] for c in before["cards"]])
+        renamed = self._organize("rename", timeline_id=timeline["id"], name="Opening")
+        self.assertEqual(renamed["organization_timelines"][0]["id"], timeline["id"])
+        deleted = self._organize("delete", timeline_id=timeline["id"])
+        self.assertEqual(deleted["organization_timelines"], [])
+        self.assertEqual(deleted["cards"], before["cards"])
+        self.assertEqual(path.read_bytes(), original_bytes)
+
+    def test_appended_cards_inherit_timeline_without_changing_parent(self):
+        created = self._organize("create", name="Opening")
+        timeline_id = created["organization_timelines"][0]["id"]
+        first_id = created["cards"][0]["id"]
+        self._organize("assign", card_id=first_id, timeline_id=timeline_id)
+        self._draft()
+        self.store.accept()
+        appended = self.store.append(prompt="next", duration_seconds=5, seed=12)
+        child = self.store.active_card(appended)
+        self.assertEqual(child["organization_timeline_id"], timeline_id)
+        self.assertEqual(child["generation_parent_id"], first_id)
+        unassigned = self._organize("assign", card_id=child["id"], timeline_id=None)
+        self.assertIsNone(unassigned["cards"][-1]["organization_timeline_id"])
+        removed = self.store.remove_draft_tail()
+        self.assertEqual(removed["cards"][0]["organization_timeline_id"], timeline_id)
+
+    def test_schema_22_migration_adds_only_optional_organization_metadata(self):
+        self._draft()
+        manifest = self.store.accept()
+        manifest["schema_version"] = 22
+        manifest.pop("organization_timelines")
+        for card in manifest["cards"]:
+            card.pop("organization_timeline_id", None)
+        self.store.manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        migrated = self.store.load()
+        self.assertEqual(migrated["schema_version"], 24)
+        self.assertEqual(migrated["organization_timelines"], [])
+        self.assertEqual(migrated["cards"], manifest["cards"])
+        self.assertEqual(self.store.load()["revision"], migrated["revision"])
+
+    def test_timeline_changes_reject_stale_revision_invalid_names_and_missing_ids(self):
+        created = self._organize("create", name="Opening")
+        timeline_id = created["organization_timelines"][0]["id"]
+        for name in ("", "   ", "x" * 101, None, "OPENING"):
+            with self.subTest(name=name), self.assertRaises(ProjectError):
+                self._organize("create", name=name)
+        with self.assertRaisesRegex(ProjectError, "stale project revision"):
+            self.store.organize_timeline(expected_revision=self.manifest["revision"], action="delete", timeline_id=timeline_id)
+        with self.assertRaisesRegex(ProjectError, "does not exist"):
+            self._organize("assign", card_id=created["active_card_id"], timeline_id="missing")
+        with self.assertRaises(ProjectError):
+            self._organize("assign", card_id="missing", timeline_id=timeline_id)
+        self.assertEqual(self.store.load(), created)
+
+    def test_timeline_changes_are_blocked_during_generation(self):
+        pending, _ = self.store.begin_generation(
+            action="generate", prompt="opening", duration_seconds=5, seed=11,
+            recipe={}, fingerprint="test",
+        )
+        with self.assertRaisesRegex(ProjectError, "operation is pending"):
+            self.store.organize_timeline(expected_revision=pending["revision"], action="create", name="Opening")
+        self.assertEqual(self.store.load(), pending)
+
+    def test_invalid_timeline_membership_is_rejected_on_load(self):
+        self.manifest["cards"][0]["organization_timeline_id"] = "missing"
+        self.store.manifest_path.write_text(json.dumps(self.manifest), encoding="utf-8")
+        with self.assertRaisesRegex(ProjectError, "organization timeline does not exist"):
+            self.store.load()
+
+    def test_duplicate_preserves_organization(self):
+        created = self._organize("create", name="Opening")
+        assigned = self._organize("assign", card_id=created["active_card_id"], timeline_id=created["organization_timelines"][0]["id"])
+        duplicate_project(self.root, "film_01", "film_copy")
+        copied = ProjectStore(self.root, "film_copy").load()
+        self.assertEqual(copied["organization_timelines"], assigned["organization_timelines"])
+        self.assertEqual(copied["cards"][0]["organization_timeline_id"], assigned["cards"][0]["organization_timeline_id"])
+        ProjectStore(self.root, "film_copy").organize_timeline(
+            expected_revision=copied["revision"], action="delete", timeline_id=copied["organization_timelines"][0]["id"],
+        )
+        self.assertEqual(self.store.load(), assigned)
 
     def test_new_project_dimensions_must_be_multiples_of_32(self):
         store = ProjectStore(self.root, "invalid_resolution")
@@ -183,7 +503,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["color_baseline_stats"], {})
         self.assertEqual(card["ref_image_size"], "max")
         self.assertEqual(card["draft_takes"][0]["ref_image_size"], "max")
@@ -336,7 +656,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("anchors", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
         self.assertEqual(migrated["cards"][0]["anchors"], [])
         self.assertEqual(migrated["active_identity_anchors"], {})
@@ -361,7 +681,7 @@ class ProjectStoreTests(unittest.TestCase):
         document["cards"][0]["anchors"] = [existing]
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["cards"][0]["anchors"], [existing])
         self.assertEqual(migrated["active_identity_anchors"], {})
 
@@ -372,7 +692,7 @@ class ProjectStoreTests(unittest.TestCase):
             card.pop("publication_history", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["cards"][0]["publication_history"], [])
 
     def test_identity_anchor_binding_survives_disable_enable_clear_and_restart(self):
@@ -529,7 +849,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         active = self.store.active_identity_anchor(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(active["identity_scope"], "face_only")
         self.assertIsNone(active["custom_identity_instruction"])
 
@@ -889,7 +1209,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         migrated_card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(len(migrated_card["draft_takes"]), 1)
         self.assertEqual(
             migrated_card["selected_draft_take_id"], migrated_card["draft_takes"][0]["id"]
@@ -906,7 +1226,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(card["selected_draft_take_id"], original_take_id)
         self.assertEqual(len(card["draft_takes"]), 1)
 
@@ -1066,7 +1386,7 @@ class ProjectStoreTests(unittest.TestCase):
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
         card = self.store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(card["prompt_format"], "legacy_flat")
         self.assertEqual(card["prompt"], original)
         self.assertEqual(card["assembled_prompt"], original)
@@ -1092,7 +1412,7 @@ class ProjectStoreTests(unittest.TestCase):
 
         migrated = store.load()
         card = store.active_card(migrated)
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertIn("summary:\nA player enters the court.", card["assembled_prompt"])
         self.assertNotIn("<summary>", card["assembled_prompt"])
         self.assertEqual(card["prompt"], card["assembled_prompt"])
@@ -1183,7 +1503,7 @@ class ProjectStoreTests(unittest.TestCase):
         document.pop("prompt_templates", None)
         self.store.manifest_path.write_text(json.dumps(document), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["prompt_templates"], [])
 
     def test_generation_rejects_a_stale_prompt_template_snapshot(self):
@@ -1533,7 +1853,7 @@ class ProjectStoreTests(unittest.TestCase):
         raw["cards"][0].pop("color_anchor_source_card_id", None)
         self.store.manifest_path.write_text(json.dumps(raw), encoding="utf-8")
         migrated = self.store.load()
-        self.assertEqual(migrated["schema_version"], 22)
+        self.assertEqual(migrated["schema_version"], 24)
         self.assertEqual(migrated["continuation_treatment"], "off")
         self.assertEqual(
             migrated["cards"][0]["color_anchor_source_card_id"],
